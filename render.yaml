@@ -1,15 +1,6 @@
 services:
   - type: web
-    name: render-phone-browser-vnc
+    name: render-phone-browser
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
-    envVars:
-      - key: VNC_PASSWORD
-        sync: false
-      - key: START_URL
-        value: https://www.google.com
-      - key: SCREEN_WIDTH
-        value: "390"
-      - key: SCREEN_HEIGHT
-        value: "844"
+    healthCheckPath: /health
