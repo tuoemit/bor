@@ -75,6 +75,7 @@ def _ensure_browser():
                     "--metrics-recording-only",
                     "--no-first-run",
                     "--no-zygote",
+                    "--disable-ipc-flooding-protection",
                     "--window-size=390,844",
                 ],
             )
@@ -144,7 +145,11 @@ def screen():
         return auth
     try:
         data = _screenshot_bytes()
-        return app.response_class(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+        return app.response_class(data, mimetype="image/jpeg", headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

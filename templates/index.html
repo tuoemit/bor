@@ -33,7 +33,7 @@
       <div class="phone">
         <div class="camera"></div>
         <div class="screen-shell">
-          <img id="screen" class="screen" src="/api/screen" alt="Live mobile browser screen">
+          <img id="screen" class="screen" alt="Live mobile browser screen">
           <div id="tapLayer" class="tap-layer"></div>
           <div id="loading" class="loading">Loading browser…</div>
         </div>
@@ -66,10 +66,57 @@ function setStatus(text, bad=false) {
   statusEl.classList.toggle('bad', bad);
 }
 
-function refreshScreen() {
-  screen.src = '/api/screen?t=' + Date.now();
-}
+let screenObjectUrl = null;
+let screenRequest = null;
 
+async function refreshScreen() {
+  if (screenRequest) return screenRequest;
+  screenRequest = (async () => {
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const headers = {};
+        if (passwordEnabled && panelPassword) headers['X-Panel-Password'] = panelPassword;
+        const res = await fetch('/api/screen?t=' + Date.now(), {
+          headers,
+          cache: 'no-store'
+        });
+
+        if (res.status === 401 && passwordEnabled && attempt === 0) {
+          panelPassword = prompt('Panel password:') || '';
+          sessionStorage.setItem('panel_password', panelPassword);
+          continue;
+        }
+
+        if (!res.ok) {
+          let message = 'Screen request failed (' + res.status + ')';
+          try {
+            const data = await res.json();
+            if (data && data.error) message = data.error;
+          } catch (_) {}
+          throw new Error(message);
+        }
+
+        const blob = await res.blob();
+        const nextUrl = URL.createObjectURL(blob);
+        const oldUrl = screenObjectUrl;
+        screenObjectUrl = nextUrl;
+        screen.onload = () => {
+          if (oldUrl) URL.revokeObjectURL(oldUrl);
+          loading.classList.remove('show');
+        };
+        screen.src = nextUrl;
+        return;
+      }
+      throw new Error('Authentication required');
+    } catch (e) {
+      setStatus(e.message, true);
+      loading.classList.remove('show');
+    } finally {
+      screenRequest = null;
+    }
+  })();
+  return screenRequest;
+}
 async function api(path, body, retry=true) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -177,7 +224,6 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
   } catch (e) { setStatus(e.message, true); }
 });
 
-screen.addEventListener('load', () => loading.classList.remove('show'));
 updateState();
 refreshScreen();
 setInterval(() => { if (!busy && document.visibilityState === 'visible') refreshScreen(); }, 1200);
