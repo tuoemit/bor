@@ -107,8 +107,25 @@
 
       <div class="errorbar" id="errorbar" hidden>
         <span class="msg" id="errorMsg"></span>
+        <button class="btn ghost" id="errorFidelity" hidden title="Render this page with the Servo engine instead">Try Servo render</button>
         <button class="btn ghost" id="errorRetry">Retry</button>
         <button class="btn ghost" id="errorDismiss">Dismiss</button>
+      </div>
+
+      <div class="fidelity" id="fidelity" hidden>
+        <div class="fbar">
+          <span class="ftitle" id="fidTitle">Servo render</span>
+          <span class="fmeta" id="fidMeta"></span>
+          <span class="grow"></span>
+          <button class="btn ghost" id="fidFit" title="Fit to width">Fit</button>
+          <button class="btn ghost" id="fidFull" title="Capture the whole scrollable page">Full page</button>
+          <button class="btn ghost" id="fidRefresh" title="Render again">Refresh</button>
+          <button class="btn ghost" id="fidReader" title="Extract readable text instead">Reader</button>
+          <button class="icon-btn" id="fidClose" title="Back to live view">✕</button>
+        </div>
+        <div class="fscroll" id="fidScroll">
+          <img id="fidImg" alt="Rendered page">
+        </div>
       </div>
 
       <iframe
@@ -136,6 +153,9 @@
   <button data-act="home">Home / new tab page</button>
   <button data-act="bookmark">Bookmark this page <small>☆</small></button>
   <button data-act="viewmode" id="viewModeItem">Desktop viewport: off</button>
+  <hr>
+  <button data-act="fidelity" id="fidelityItem">Servo render (real engine)</button>
+  <button data-act="reader" id="readerItem">Reader mode (text only)</button>
   <hr>
   <button data-act="source">View upstream source</button>
   <button data-act="copy">Copy upstream URL</button>

@@ -59,7 +59,22 @@ export const config = {
   // another site's iframe, such as a hosted preview pane.
   frameAncestors: (process.env.CSP_FRAME_ANCESTORS ?? '').trim() || "'self'",
 
-  version: '1.1.0',
+  // Optional Servo sidecar ("fidelity mode"): a real engine for pages the
+  // proxy can't handle, served as prebuilt screenshots and reader-mode text.
+  // Lazy: nothing is spawned until the first request that needs it.
+  servo: {
+    enabled: asBool(process.env.SERVO_ENABLED, true),
+    bin: (process.env.SERVO_BIN ?? '').trim() || path.join(process.cwd(), 'bin', 'servo-fetch'),
+    host: (process.env.SERVO_HOST ?? '').trim() || '127.0.0.1',
+    port: asInt(process.env.SERVO_PORT, 9233),
+    timeoutMs: asInt(process.env.SERVO_TIMEOUT_MS, 45_000),
+    startTimeoutMs: asInt(process.env.SERVO_START_TIMEOUT_MS, 30_000),
+    maxRestarts: asInt(process.env.SERVO_MAX_RESTARTS, 3),
+    viewport: (process.env.SERVO_VIEWPORT ?? '').trim() || '1280x800',
+    idleShutdownMs: asInt(process.env.SERVO_IDLE_SHUTDOWN_MS, 5 * 60_000),
+  },
+
+  version: '1.2.0',
 };
 
 // Hop-by-hop headers must never be forwarded (RFC 9110 7.6.1).

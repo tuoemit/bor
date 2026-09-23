@@ -13,6 +13,10 @@ services:
         sync: false # Render prompts you for this on first deploy
       - key: SESSION_SECRET
         generateValue: true
+      # Fidelity mode (Servo sidecar) needs ~500 MB peak -> paid tier only.
+      # The free plan runs proxy-only; the panel detects this automatically.
+      - key: SERVO_ENABLED
+        value: "0"
       # Free instances cannot mount disks, so state is lost on redeploy.
       # On a paid plan, add a disk mounted at /data and the DB_PATH env var
       # in the Dockerfile (/data/browser.db) will start persisting.

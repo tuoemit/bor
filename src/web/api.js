@@ -18,6 +18,8 @@ import {
 import { hasVolume, platform } from '../util/http.js';
 import { ProxyError, resolveTarget } from '../util/net.js';
 import { makeSigner } from '../proxy/sign.js';
+import * as servoClient from '../servo/client.js';
+import { isAvailable as servoAvailable } from '../servo/manager.js';
 import { upstreamFetch } from '../proxy/upstream.js';
 import { extractSuggestions } from './suggest.js';
 
@@ -70,6 +72,7 @@ export function createApiRouter() {
       ephemeralPassword: config.ephemeralPassword,
       allowPrivateHosts: config.allowPrivateHosts,
       engine: 'server-proxy webview (no headless browser)',
+      fidelityEngine: servoClient.status(),
       memory_mb: { rss: Math.round(mem.rss / 1048576), heap: Math.round(mem.heapUsed / 1048576) },
       limits: {
         upstreamTimeoutMs: config.upstreamTimeoutMs,
@@ -130,6 +133,93 @@ export function createApiRouter() {
         message: err.message,
       });
     }
+  }));
+
+  /* ------------------------------------------------- fidelity mode (Servo) */
+  router.get('/engine', (_req, res) => res.json(servoClient.status()));
+
+  // Render cache: reloading the same screenshot (fit/actual size toggles,
+  // browser retries) shouldn't cost another 220 MB-engine round trip.
+  const shotCache = new Map(); // key -> { buffer, contentType, at }
+  const SHOT_TTL_MS = 5 * 60_000;
+  const SHOT_MAX = 6;
+
+  function cacheGet(key) {
+    const hit = shotCache.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.at > SHOT_TTL_MS) {
+      shotCache.delete(key);
+      return null;
+    }
+    return hit;
+  }
+
+  function cachePut(key, value) {
+    shotCache.set(key, { ...value, at: Date.now() });
+    while (shotCache.size > SHOT_MAX) shotCache.delete(shotCache.keys().next().value);
+  }
+
+  // Returned as image/png so the panel can point an <img> straight at it.
+  router.get('/fidelity', wrap(async (req, res) => {
+    if (!servoAvailable()) {
+      return res.status(503).json({ error: 'servo_unavailable', message: servoClient.status().hint });
+    }
+
+    const target = String(req.query.url ?? '');
+    if (!/^https?:\/\//i.test(target)) {
+      return res.status(400).json({ error: 'bad_url', message: 'A http(s) url query parameter is required.' });
+    }
+
+    // Same SSRF gate the proxy uses: never let the sidecar become a way to
+    // reach the metadata service or the private network.
+    try {
+      await resolveTarget(target);
+    } catch (err) {
+      const status = err instanceof ProxyError ? err.status : 400;
+      return res.status(status).json({ error: err.code ?? 'blocked', message: err.message });
+    }
+
+    const full = req.query.full === '1';
+    const [width, height] = String(req.query.viewport ?? config.servo.viewport)
+      .split('x')
+      .map((n) => Number.parseInt(n, 10) || undefined);
+
+    const key = `${target}|${full}|${width}x${height}`;
+    let shot = cacheGet(key);
+
+    if (!shot) {
+      const fresh = await servoClient.screenshot(target, { fullPage: full, width, height });
+      cachePut(key, fresh);
+      shot = { ...fresh, cached: false };
+    }
+
+    res
+      .status(200)
+      .set({
+        'content-type': shot.contentType,
+        'cache-control': 'private, max-age=120',
+        'x-servo-cache': shot.cached === false ? 'miss' : 'hit',
+        'x-robots-tag': 'noindex',
+      })
+      .send(shot.buffer);
+  }));
+
+  router.post('/reader', wrap(async (req, res) => {
+    if (!servoAvailable()) {
+      return res.status(503).json({ error: 'servo_unavailable', message: servoClient.status().hint });
+    }
+
+    const target = String(req.body?.url ?? '');
+    if (!/^https?:\/\//i.test(target)) return res.status(400).json({ error: 'bad_url' });
+
+    try {
+      await resolveTarget(target);
+    } catch (err) {
+      const status = err instanceof ProxyError ? err.status : 400;
+      return res.status(status).json({ error: err.code ?? 'blocked', message: err.message });
+    }
+
+    return res.json(await servoClient.document(target));
   }));
 
   router.get('/suggest', (req, res) => {

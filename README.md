@@ -80,6 +80,10 @@ Everything is env vars, so the same image runs anywhere.
 | `ALLOW_PRIVATE_HOSTS` | `0` | **Leave off.** Enables the SSRF guard; off means `169.254.169.254`, `127.0.0.1` and the private network are unreachable through the panel. |
 | `BLOCKED_HOSTS` | – | Comma-separated hosts to refuse (e.g. your own admin host). |
 | `CSP_FRAME_ANCESTORS` | `'self'` | Widen to `*` if the *panel itself* is embedded in another site's iframe. |
+| `SERVO_ENABLED` | `1` | Fidelity mode: use the Servo sidecar when its binary is present. |
+| `SERVO_BIN` | `./bin/servo-fetch` | Path to the sidecar binary. |
+| `SERVO_PORT` | `9233` | Sidecar port (bound to 127.0.0.1 only). |
+| `SERVO_IDLE_SHUTDOWN_MS` | `300000` | Stop the sidecar after this long idle, freeing ~450 MB. `0` keeps it warm. |
 | `SEARCH_URL` | DuckDuckGo HTML | Search prefix used when the address bar gets a non-URL. |
 | `LOG_LEVEL` | `info` | `error`\|`warn`\|`info`\|`debug`. |
 
@@ -143,6 +147,54 @@ Without a volume the app detects the unwritable path and quietly runs in-memory
 Without Chromium there's no JS-driven layout engine, no service workers, and no canvas/WebGL
 offscreen rendering — but for the vast majority of the web, the real page renders correctly in
 your browser with the server doing ~50 MB of work instead of ~500 MB.
+
+---
+
+## Fidelity mode — a real engine, on demand
+
+The proxy renders with *your* browser, which is why it fits a free tier — but a handful of
+sites defeat URL rewriting. For those, the panel can hand the page to **Servo**, a real Rust
+browser engine (MPL-2.0), running as a sidecar process:
+
+```bash
+npm run servo:install     # downloads the prebuilt binary (~89 MB unpacked)
+npm start                 # the panel detects it and enables fidelity mode
+```
+
+In the panel you get three things: **Servo render** (a PNG of the real rendered page, viewport
+or full-page), **Reader mode** (Readability-extracted markdown, falling back to full page text),
+and a **Try Servo render** button that appears in the error bar whenever the proxy fails on a
+page — which is exactly when you want it.
+
+It is **lazy**: nothing is spawned until you ask for a render, and the engine is stopped again
+after `SERVO_IDLE_SHUTDOWN_MS` of silence, releasing its memory.
+
+### What it really costs — measured, not estimated
+
+| Scenario | Time | Peak RSS |
+|---|---|---|
+| Sidecar idle, engine loaded | — | **221 MB** |
+| Render `example.com` (viewport) | 3 s cold / 0.3 s warm | 229 MB |
+| Render a Wikipedia article | ~4 s | **400–494 MB** |
+| Full-page render (1280×16384, 6 MB PNG) | ~7.5 s | ~500 MB |
+| Reader mode (extract text only) | 0.1–4 s | (no PNG) |
+| Second request for the same page | **4.5 ms** (server-side render cache) | — |
+
+Node + panel is ~73 MB. So fidelity mode takes a container from ~73 MB to ~570 MB at peak —
+**over the free tier's 512 MB ceiling.** Run it on the paid 1–2 GB tier, or leave
+`SERVO_ENABLED=0` and keep the proxy.
+
+A few implementation notes worth knowing:
+
+* The API takes **camelCase** (`fullPage`, not `full_page`) — the lowercase form is silently ignored.
+* `/v1/fetch` always returns one `content` string whose meaning depends on `format`; the
+  `json` format returns a JSON *string* that must be parsed twice.
+* Readability returns just a nav stub on some sites (Wikipedia among them), so reader mode falls
+  back to `document.body.innerText` and reports which strategy it used.
+* Rendered URLs pass through the **same SSRF gate** as the proxy — the sidecar can never be used
+  to reach the metadata service or the private network (verified: both return 403).
+* The binary is **glibc-linked**, so the image moved from Alpine to Debian slim, and it requires
+  real fonts (`fonts-dejavu-core`) or every screenshot renders text as empty boxes.
 
 ---
 

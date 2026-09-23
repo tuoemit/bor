@@ -11,6 +11,7 @@ import { createOrphanHandler, createProxyRouter, errorPage } from './src/proxy/i
 import { createApiRouter } from './src/web/api.js';
 import { attachSession, createAuthRouter, requireAuth } from './src/web/auth.js';
 import { cookieMiddleware, platform } from './src/util/http.js';
+import { isAvailable as servoAvailable, stop as stopServo } from './src/servo/manager.js';
 
 const PUBLIC_DIR = path.join(process.cwd(), 'public');
 
@@ -117,7 +118,13 @@ async function main() {
     log.info(`browser-panel v${config.version} — ${where.name}`);
     log.info(`listening on http://${config.host}:${config.port}`);
     log.info(`store: ${dbState}`);
-    log.info(`engine: server-side proxy webview (no headless browser)`);
+    log.info('engine: server-side proxy webview (no headless browser)');
+    const servo = servoAvailable();
+    log.info(
+      servo
+        ? 'fidelity: Servo sidecar available (lazy — starts on first fidelity render)'
+        : 'fidelity: Servo sidecar not available (proxy-only; see SERVO_BIN)',
+    );
     if (config.ephemeralPassword) {
       log.warn('APP_PASSWORD was not set. Generated a one-time password:');
       log.warn(`  →  ${config.password}`);
@@ -131,6 +138,7 @@ async function main() {
 
   const shutdown = (signal) => {
     log.info(`${signal} received, shutting down`);
+    stopServo();
     server.close(() => {
       closeDb();
       process.exit(0);

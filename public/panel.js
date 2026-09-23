@@ -16,6 +16,9 @@ const els = {
   modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'), modalSub: $('modalSub'),
   toast: $('toast'), errorbar: $('errorbar'), errorMsg: $('errorMsg'),
   sidebar: $('sidebar'), menu: $('menu'),
+  fidelity: $('fidelity'), fidImg: $('fidImg'), fidScroll: $('fidScroll'),
+  fidMeta: $('fidMeta'), fidTitle: $('fidTitle'), fidelityItem: $('fidelityItem'),
+  readerItem: $('readerItem'), errorFidelity: $('errorFidelity'),
 };
 
 const state = {
@@ -29,6 +32,9 @@ const state = {
   // scaled to fit, for sites that are unusable in a narrow viewport.
   viewMode: 'fit',
   narrow: false,
+  // Servo sidecar ("fidelity mode") availability, from /api/engine.
+  servo: { available: false, status: 'disabled', version: null, hint: null },
+  fidelity: { url: null, full: false, open: false, loadedAt: 0 },
 };
 
 const NARROW = '(max-width: 900px)';
@@ -148,6 +154,7 @@ function showTab(tab) {
   if (!tab) return;
   updateChrome(tab);
   if (tab.path) {
+    if (state.fidelity.open) closeFidelity();
     if (els.frame.getAttribute('src') !== tab.path) els.frame.setAttribute('src', tab.path);
     els.frame.hidden = false;
     els.startpage.hidden = true;
@@ -506,6 +513,12 @@ async function loadInfo() {
   const rows = [
     ['Platform', `${info.platform.name}${info.platform.region ? ` (${info.platform.region})` : ''}`],
     ['Engine', info.engine],
+    [
+      'Fidelity engine',
+      info.fidelityEngine?.available
+        ? `Servo v${info.fidelityEngine.version ?? '?'} (sidecar, ${info.fidelityEngine.status})`
+        : 'unavailable — proxy only',
+    ],
     ['Version', `v${info.version} · node ${info.node}`],
     ['Uptime', `${Math.floor(info.uptime_s / 60)}m ${info.uptime_s % 60}s`],
     ['Memory', `${info.memory_mb.rss} MB rss / ${info.memory_mb.heap} MB heap`],
@@ -741,6 +754,8 @@ els.menu.addEventListener('click', async (event) => {
   if (act === 'reload') return reload();
   if (act === 'bookmark') return toggleBookmark();
   if (act === 'viewmode') return setViewMode(state.viewMode === 'desktop' ? 'fit' : 'desktop');
+  if (act === 'fidelity') return showFidelity(fidelityUrl(tab), { force: true });
+  if (act === 'reader') return openReader(fidelityUrl(tab));
   if (act === 'clearcookies') {
     await api('/api/cookies', { method: 'DELETE' });
     loadCookies();
@@ -868,6 +883,112 @@ if (window.visualViewport) {
   });
 }
 
+/* ------------------------------------------------ fidelity mode (Servo) */
+function refreshServoUi() {
+  const ok = state.servo.available;
+  const item = $('fidelityItem');
+  const reader = $('readerItem');
+  for (const el of [item, reader]) {
+    if (!el) continue;
+    el.disabled = !ok;
+    el.style.opacity = ok ? '' : '0.45';
+    el.title = ok ? '' : state.servo.hint || 'Servo sidecar unavailable';
+  }
+  $('errorFidelity').hidden = !ok;
+}
+
+async function loadEngineInfo() {
+  try {
+    state.servo = await api('/api/engine');
+  } catch {
+    state.servo = { available: false, status: 'unavailable', hint: 'Could not query the engine.' };
+  }
+  refreshServoUi();
+}
+
+function fidelityUrl(tab) {
+  return tab?.url ?? state.fidelity.url;
+}
+
+function showFidelity(url, { full, force = false } = {}) {
+  if (!url) return toast('Nothing to render.');
+  if (!state.servo.available) {
+    return toast(state.servo.hint || 'Servo sidecar is not available on this deployment.');
+  }
+
+  const changed = url !== state.fidelity.url || (full !== undefined && full !== state.fidelity.full);
+  state.fidelity.url = url;
+  if (full !== undefined) state.fidelity.full = full;
+  if (state.fidelity.open && !changed && !force) return;
+
+  const params = new URLSearchParams({ url });
+  if (state.fidelity.full) params.set('full', '1');
+  if (state.viewMode === 'desktop') params.set('viewport', '1280x1400');
+
+  els.fidelity.hidden = false;
+  els.fidScroll.hidden = false;
+  state.fidelity.open = true;
+  els.fidTitle.textContent = state.fidelity.full ? 'Servo render — full page' : 'Servo render';
+  els.fidMeta.textContent = `${hostOf(url)} · rendering…`;
+  els.fidFull.textContent = state.fidelity.full ? 'Viewport only' : 'Full page';
+
+  // Cache-bust on explicit refresh only, so the server-side render cache works.
+  const cacheBust = force ? `&t=${Date.now()}` : '';
+  els.fidImg.onload = () => {
+    els.fidMeta.textContent = `${hostOf(state.fidelity.url)} · ${els.fidImg.naturalWidth}×${els.fidImg.naturalHeight}`;
+    state.fidelity.loadedAt = Date.now();
+  };
+  els.fidImg.onerror = () => {
+    els.fidMeta.textContent = 'render failed';
+    showError('Servo could not render that page. It may need more memory than this instance has.', () => showFidelity(url, { force: true }));
+  };
+  els.fidImg.src = `/api/fidelity?${params.toString()}${cacheBust}`;
+}
+
+function closeFidelity() {
+  state.fidelity.open = false;
+  els.fidelity.hidden = true;
+  els.fidImg.removeAttribute('src');
+}
+
+function setFidelityFit(fit) {
+  els.fidScroll.classList.toggle('fit', fit);
+  els.fidScroll.classList.toggle('actual', !fit);
+  $('fidFit').textContent = fit ? 'Fit' : 'Fit';
+}
+
+async function openReader(url) {
+  if (!url) return toast('Nothing to read.');
+  if (!state.servo.available) {
+    return toast(state.servo.hint || 'Reader mode needs the Servo sidecar.');
+  }
+  showModal('Reader mode', `${hostOf(url)} · extracting…`, '');
+  try {
+    const data = await api('/api/reader', { method: 'POST', body: { url, format: 'markdown' } });
+    els.modalTitle.textContent = 'Reader mode';
+    els.modalSub.textContent = `${hostOf(data.url)} · ${(data.bytes / 1024).toFixed(1)} KB of text`;
+    els.modalBody.textContent = data.content || '(no readable content found)';
+  } catch (err) {
+    els.modalBody.textContent = `Could not extract text: ${err.message}`;
+  }
+}
+
+$('fidClose').addEventListener('click', () => {
+  closeFidelity();
+  renderTabs();
+});
+$('fidFit').addEventListener('click', () => {
+  setFidelityFit(!els.fidScroll.classList.contains('fit'));
+});
+$('fidFull').addEventListener('click', () => showFidelity(state.fidelity.url, { full: !state.fidelity.full, force: true }));
+$('fidRefresh').addEventListener('click', () => showFidelity(state.fidelity.url, { force: true }));
+$('fidReader').addEventListener('click', () => openReader(state.fidelity.url));
+$('errorFidelity').addEventListener('click', () => {
+  const tab = activeTab();
+  if (tab?.url) showFidelity(tab.url);
+});
+setFidelityFit(true);
+
 /* -------------------------------------------------------------- shortcuts */
 window.addEventListener('keydown', (event) => {
   const mod = event.ctrlKey || event.metaKey;
@@ -955,6 +1076,7 @@ async function boot() {
 
   syncLayout();
   applyViewMode();
+  loadEngineInfo();
   loadHistory();
   loadTilesHint();
   if (!restoreSession()) createTab();
