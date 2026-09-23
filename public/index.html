@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>browser-panel</title>
+<link rel="stylesheet" href="/panel.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%235b8cff' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%235b8cff'/></svg>">
+</head>
+<body>
+<div class="app">
+
+  <header class="titlebar">
+    <div class="brand"><span class="dot"></span>browser-panel</div>
+    <div class="tabs" id="tabs"></div>
+    <button class="icon-btn" id="newTab" title="New tab (Ctrl+T)">＋</button>
+    <span class="chip" id="engineChip" title="Rendering engine"><b>proxy webview</b> · no chromium</span>
+    <button class="icon-btn" id="logoutBtn" title="Log out">⏻</button>
+  </header>
+
+  <div class="toolbar">
+    <button class="icon-btn" id="backBtn" title="Back (Alt+←)">←</button>
+    <button class="icon-btn" id="forwardBtn" title="Forward (Alt+→)">→</button>
+    <button class="icon-btn" id="reloadBtn" title="Reload (Ctrl+R)">⟳</button>
+    <button class="icon-btn" id="homeBtn" title="Home">⌂</button>
+
+    <form class="omnibox" id="omniboxForm" autocomplete="off">
+      <span class="lock" id="lockIcon" title="Transport">◍</span>
+      <input id="omnibox" placeholder="Search the web or enter an address" spellcheck="false" autocapitalize="off" autocomplete="off">
+      <button class="go" type="submit">Go</button>
+      <div class="suggest" id="suggest"></div>
+    </form>
+
+    <button class="icon-btn" id="starBtn" title="Bookmark this page">☆</button>
+    <button class="icon-btn" id="sidebarBtn" title="Toggle sidebar (Ctrl+B)">▤</button>
+    <button class="icon-btn" id="menuBtn" title="Menu">⋯</button>
+  </div>
+
+  <div class="progress" id="progress"><i></i></div>
+
+  <main class="main">
+    <aside class="sidebar" id="sidebar">
+      <div class="tabs-row" id="sideTabs">
+        <button data-panel="history" class="active">History</button>
+        <button data-panel="bookmarks">Bookmarks</button>
+        <button data-panel="frequent">Top sites</button>
+        <button data-panel="cookies">Cookies</button>
+        <button data-panel="about">About</button>
+      </div>
+
+      <div class="side-panel active" id="panel-history">
+        <div class="side-actions">
+          <input class="btn wide ghost" id="historySearch" placeholder="Filter history…" style="border-radius:8px;padding:6px 10px;outline:none;background:#0d1016;border:1px solid var(--line);color:inherit">
+          <button class="btn danger" id="clearHistory" title="Delete all history">Clear</button>
+        </div>
+        <div class="list" id="historyList"></div>
+      </div>
+
+      <div class="side-panel" id="panel-bookmarks">
+        <h4>Saved pages</h4>
+        <div class="list" id="bookmarkList"></div>
+      </div>
+
+      <div class="side-panel" id="panel-frequent">
+        <h4>Most visited</h4>
+        <div class="list" id="frequentList"></div>
+      </div>
+
+      <div class="side-panel" id="panel-cookies">
+        <h4>Server-side cookie jar</h4>
+        <div class="side-actions"><button class="btn danger wide" id="clearCookies">Forget all cookies</button></div>
+        <div class="list" id="cookieList"></div>
+      </div>
+
+      <div class="side-panel" id="panel-about">
+        <h4>Service</h4>
+        <div id="infoBox"></div>
+        <div class="note">
+          <b>How this works.</b> Pages are fetched by the server and rewritten so
+          every URL points back here, then rendered by <i>your</i> browser inside a
+          sandboxed iframe. No headless Chromium runs on the host, so it fits in a
+          free 512 MB instance — the trade-off is that a datacenter IP gets blocked
+          by some sites, and a few aggressive SPAs will misbehave.
+        </div>
+        <div class="note">
+          <b>Persistence.</b> <span id="persistNote">…</span>
+        </div>
+      </div>
+    </aside>
+
+    <section class="viewport">
+      <div class="startpage" id="startpage">
+        <div class="hero">
+          <h1>New tab</h1>
+          <p id="startSub">Remote browser panel · proxy webview engine</p>
+        </div>
+        <form class="search" id="startSearchForm">
+          <input id="startSearch" placeholder="Search the web or enter an address" spellcheck="false" autocomplete="off">
+          <button type="submit">Go</button>
+        </form>
+        <div class="tiles" id="tiles"></div>
+      </div>
+
+      <div class="errorbar" id="errorbar" hidden>
+        <span class="msg" id="errorMsg"></span>
+        <button class="btn ghost" id="errorRetry">Retry</button>
+        <button class="btn ghost" id="errorDismiss">Dismiss</button>
+      </div>
+
+      <iframe
+        id="frame"
+        hidden
+        referrerpolicy="same-origin"
+        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads">
+      </iframe>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span class="pill" id="statusEngine">engine: proxy</span>
+    <span class="pill" id="statusPlatform">platform: …</span>
+    <span class="pill" id="statusStore">store: …</span>
+    <span class="grow"></span>
+    <span id="statusNote">ready</span>
+    <span class="sep">·</span>
+    <span id="statusMem">— MB</span>
+  </footer>
+</div>
+
+<div class="menu" id="menu">
+  <button data-act="source">View upstream source</button>
+  <button data-act="copy">Copy upstream URL</button>
+  <button data-act="openRaw">Open document directly (new tab)</button>
+  <hr>
+  <button data-act="newtab">New tab <small>Ctrl+T</small></button>
+  <button data-act="clearcookies">Forget cookies</button>
+  <button data-act="logout">Log out</button>
+  <hr>
+  <button data-act="shortcuts">Keyboard shortcuts</button>
+</div>
+
+<div class="modal" id="modal">
+  <div class="backdrop" data-close="1"></div>
+  <div class="sheet">
+    <header>
+      <b id="modalTitle">Source</b>
+      <span class="grow" id="modalSub"></span>
+      <button class="icon-btn" data-close="1">✕</button>
+    </header>
+    <pre id="modalBody"></pre>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/panel.js"></script>
+</body>
+</html>

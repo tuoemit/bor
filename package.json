@@ -1,0 +1,21 @@
+{
+  "name": "browser-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Password-protected remote browser panel. Server-side HTTP reverse proxy + iframe webview (no Chromium). Deploys to Render or Railway.",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "express": "^4.21.2",
+    "iconv-lite": "^0.6.3",
+    "sql.js": "^1.13.0"
+  }
+}

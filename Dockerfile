@@ -1,22 +1,27 @@
-FROM python:3.12-slim-bookworm
+# Works as-is on both Render and Railway.
+FROM node:22-alpine
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PLAYWRIGHT_BROWSERS_PATH=0
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       chromium \
-       ca-certificates \
-       fonts-liberation \
-       fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
+ENV NODE_ENV=production \
+    PORT=8080 \
+    DB_PATH=/data/browser.db
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+
+# Dependencies first so Docker layer caching survives code edits.
+# No native modules (sql.js is WASM) -> no compiler needed, fast builds.
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev || npm install --omit=dev
+
 COPY . .
 
-EXPOSE 10000
-CMD ["gunicorn", "-w", "1", "-k", "gthread", "--threads", "2", "--timeout", "90", "--bind", "0.0.0.0:10000", "app:app"]
+# Writable location for the SQLite file. Without a mounted volume this is
+# wiped on redeploy; the app falls back to an in-memory DB if it can't write.
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:${PORT}/healthz || exit 1
+
+CMD ["node", "server.js"]

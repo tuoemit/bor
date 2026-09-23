@@ -1,6 +1,18 @@
+# Render Blueprint -- https://render.com/docs/blueprint-spec
+# New + > Blueprint > point at your repo. Render fills in the rest.
 services:
   - type: web
-    name: render-phone-browser
+    name: browser-panel
     runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
-    healthCheckPath: /health
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: APP_PASSWORD
+        sync: false # Render prompts you for this on first deploy
+      - key: SESSION_SECRET
+        generateValue: true
+      # Free instances cannot mount disks, so state is lost on redeploy.
+      # On a paid plan, add a disk mounted at /data and the DB_PATH env var
+      # in the Dockerfile (/data/browser.db) will start persisting.

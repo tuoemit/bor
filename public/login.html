@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in · browser-panel</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background:
+      radial-gradient(900px 420px at 50% -10%, rgba(91,140,255,.16), transparent 70%),
+      radial-gradient(700px 380px at 90% 110%, rgba(140,91,255,.10), transparent 70%),
+      #0a0c11;
+    color: #e7eaf1;
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+  }
+  .card {
+    width: min(392px, 100%);
+    background: #0f1219;
+    border: 1px solid #232936;
+    border-radius: 16px;
+    padding: 26px 26px 22px;
+    box-shadow: 0 30px 70px rgba(0,0,0,.55);
+  }
+  .logo { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; }
+  .logo .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #9dbbff, #5b8cff);
+    box-shadow: 0 0 14px rgba(91,140,255,.75);
+  }
+  .logo b { font-size: 13px; letter-spacing: .02em; color: #8b94a7; font-weight: 600; }
+  h1 { margin: 0 0 4px; font-size: 19px; letter-spacing: -.01em; }
+  p.sub { margin: 0 0 18px; color: #8b94a7; font-size: 12.5px; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #8b94a7; margin-bottom: 7px; font-weight: 600; }
+  input {
+    width: 100%;
+    background: #0a0d13;
+    border: 1px solid #232936;
+    border-radius: 10px;
+    padding: 11px 13px;
+    color: inherit;
+    font: inherit;
+    outline: none;
+  }
+  input:focus { border-color: rgba(91,140,255,.65); box-shadow: 0 0 0 3px rgba(91,140,255,.13); }
+  button {
+    width: 100%;
+    margin-top: 14px;
+    padding: 11px 14px;
+    border: 1px solid rgba(91,140,255,.5);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #4f7ff5, #3f6fe0);
+    color: #fff;
+    font: 600 14px/1 inherit;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.06); }
+  button:disabled { opacity: .6; cursor: default; }
+  .err {
+    margin-top: 12px;
+    padding: 9px 11px;
+    border: 1px solid #4d2a3a;
+    background: #241620;
+    color: #ffd0da;
+    border-radius: 9px;
+    font-size: 12.5px;
+    display: none;
+  }
+  .err.show { display: block; }
+  .foot { margin-top: 16px; color: #6b7488; font-size: 11.5px; text-align: center; }
+</style>
+</head>
+<body>
+<form class="card" id="form">
+  <div class="logo"><span class="dot"></span><b>browser-panel</b></div>
+  <h1>Sign in</h1>
+  <p class="sub">This panel runs a browser session on the server. It is password protected.</p>
+
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+
+  <button id="submit" type="submit">Unlock panel</button>
+  <div class="err" id="err"></div>
+  <div class="foot">Session cookie is signed and HttpOnly · attempts are rate limited</div>
+</form>
+
+<script>
+  const form = document.getElementById('form');
+  const err = document.getElementById('err');
+  const submit = document.getElementById('submit');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    err.classList.remove('show');
+    submit.disabled = true;
+    submit.textContent = 'Checking…';
+    try {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        window.location.href = '/';
+        return;
+      }
+      err.textContent = data.message || 'Sign-in failed.';
+      err.classList.add('show');
+    } catch (networkError) {
+      err.textContent = 'Could not reach the server.';
+      err.classList.add('show');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Unlock panel';
+    }
+  });
+</script>
+</body>
+</html>

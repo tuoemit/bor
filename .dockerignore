@@ -1,10 +1,7 @@
+node_modules
+data
 .git
-.gitignore
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache
-.venv
 .env
-render-phone-browser.zip
+*.md
+!README.md
+.DS_Store
