@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="robots" content="noindex, nofollow">
 <title>browser-panel</title>
 <link rel="stylesheet" href="/panel.css">
@@ -33,6 +33,7 @@
     </form>
 
     <button class="icon-btn" id="starBtn" title="Bookmark this page">☆</button>
+    <button class="icon-btn touch-only" id="viewBtn" title="Toggle desktop viewport">▭</button>
     <button class="icon-btn" id="sidebarBtn" title="Toggle sidebar (Ctrl+B)">▤</button>
     <button class="icon-btn" id="menuBtn" title="Menu">⋯</button>
   </div>
@@ -89,6 +90,8 @@
       </div>
     </aside>
 
+    <div class="scrim" id="scrim" hidden></div>
+
     <section class="viewport">
       <div class="startpage" id="startpage">
         <div class="hero">
@@ -129,11 +132,17 @@
 </div>
 
 <div class="menu" id="menu">
+  <button data-act="sidebar">Toggle sidebar <small>Ctrl+B</small></button>
+  <button data-act="home">Home / new tab page</button>
+  <button data-act="bookmark">Bookmark this page <small>☆</small></button>
+  <button data-act="viewmode" id="viewModeItem">Desktop viewport: off</button>
+  <hr>
   <button data-act="source">View upstream source</button>
   <button data-act="copy">Copy upstream URL</button>
   <button data-act="openRaw">Open document directly (new tab)</button>
   <hr>
   <button data-act="newtab">New tab <small>Ctrl+T</small></button>
+  <button data-act="reload">Reload page <small>Ctrl+R</small></button>
   <button data-act="clearcookies">Forget cookies</button>
   <button data-act="logout">Log out</button>
   <hr>

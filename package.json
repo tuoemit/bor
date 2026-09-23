@@ -1,6 +1,6 @@
 {
   "name": "browser-panel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Password-protected remote browser panel. Server-side HTTP reverse proxy + iframe webview (no Chromium). Deploys to Render or Railway.",
   "type": "module",

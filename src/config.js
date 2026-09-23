@@ -59,7 +59,7 @@ export const config = {
   // another site's iframe, such as a hosted preview pane.
   frameAncestors: (process.env.CSP_FRAME_ANCESTORS ?? '').trim() || "'self'",
 
-  version: '1.0.0',
+  version: '1.1.0',
 };
 
 // Hop-by-hop headers must never be forwarded (RFC 9110 7.6.1).

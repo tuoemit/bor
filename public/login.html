@@ -2,13 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <title>Sign in · browser-panel</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    -webkit-text-size-adjust: 100%;
+    overscroll-behavior: none;
+  }
   body {
     background:
       radial-gradient(900px 420px at 50% -10%, rgba(91,140,255,.16), transparent 70%),
@@ -18,7 +23,15 @@
     font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: grid;
     place-items: center;
+    min-height: 100vh;
+    min-height: 100dvh;
     padding: 20px;
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  @media (max-width: 420px) {
+    .card { padding: 22px 18px 18px; border-radius: 14px; }
+    h1 { font-size: 18px; }
   }
   .card {
     width: min(392px, 100%);
@@ -40,6 +53,7 @@
   label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #8b94a7; margin-bottom: 7px; font-weight: 600; }
   input {
     width: 100%;
+    font-size: 16px;   /* < 16px makes iOS Safari zoom in on focus */
     background: #0a0d13;
     border: 1px solid #232936;
     border-radius: 10px;

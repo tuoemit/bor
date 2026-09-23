@@ -11,7 +11,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   tabs: $('tabs'), frame: $('frame'), omnibox: $('omnibox'), suggest: $('suggest'),
   progress: $('progress'), startpage: $('startpage'), tiles: $('tiles'),
-  historyList: $('historyList'), bookmarkList: $('bookmarkList'),
+  historyList: $('historyList'), bookmarkList: $('bookmarkList'), scrim: $('scrim'),
   frequentList: $('frequentList'), cookieList: $('cookieList'), infoBox: $('infoBox'),
   modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'), modalSub: $('modalSub'),
   toast: $('toast'), errorbar: $('errorbar'), errorMsg: $('errorMsg'),
@@ -25,7 +25,15 @@ const state = {
   suggestions: [],
   suggestIndex: -1,
   lastSearch: '',
+  // 'fit' = page lays out at the phone width; 'desktop' = fixed 1280px layout
+  // scaled to fit, for sites that are unusable in a narrow viewport.
+  viewMode: 'fit',
+  narrow: false,
 };
+
+const NARROW = '(max-width: 900px)';
+const DESKTOP_WIDTH = 1280;
+const isNarrow = () => window.matchMedia(NARROW).matches;
 
 let uid = 0;
 const nextId = () => `t${Date.now().toString(36)}${(++uid).toString(36)}`;
@@ -92,6 +100,7 @@ function createTab(url = null, { activate = true, title = null } = {}) {
   state.tabs.push(tab);
   if (activate) state.activeId = tab.id;
   renderTabs();
+  scrollActiveTabIntoView();
   if (activate) showTab(tab);
   if (url) navigate(tab, url, { record: false });
   else renderStartpage();
@@ -120,7 +129,19 @@ function selectTab(id) {
   state.activeId = id;
   renderTabs();
   showTab(activeTab());
+  scrollActiveTabIntoView();
   saveSession();
+}
+
+/** On phones the tab strip only shows ~2 tabs; keep the active one visible. */
+function scrollActiveTabIntoView() {
+  const el = els.tabs.querySelector('.tab.active');
+  if (!el) return;
+  try {
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  } catch {
+    el.scrollIntoView();
+  }
 }
 
 function showTab(tab) {
@@ -367,7 +388,9 @@ async function refreshSuggestions(query) {
       url.className = 'u';
       url.textContent = prettyUrl(item.url);
       row.append(kind, title, url);
-      row.addEventListener('mousedown', (event) => {
+      // pointerdown covers mouse + touch + pen; on iOS the synthesized
+      // mousedown arrives after focus changes and can be swallowed.
+      row.addEventListener('pointerdown', (event) => {
         event.preventDefault();
         commitSuggestion(index);
       });
@@ -569,17 +592,18 @@ $('newTab').addEventListener('click', () => createTab());
 $('backBtn').addEventListener('click', goBack);
 $('forwardBtn').addEventListener('click', goForward);
 $('reloadBtn').addEventListener('click', reload);
-$('homeBtn').addEventListener('click', () => {
+function goHome() {
   const tab = activeTab() ?? createTab();
   tab.url = null;
   tab.path = null;
+  tab.title = 'New tab';
   showTab(tab);
   updateChrome(tab);
-});
-$('sidebarBtn').addEventListener('click', () => els.sidebar.classList.toggle('hidden'));
-$('errorDismiss').addEventListener('click', () => { els.errorbar.hidden = true; });
+  renderStartpage();
+  saveSession();
+}
 
-$('starBtn').addEventListener('click', async () => {
+async function toggleBookmark() {
   const tab = activeTab();
   if (!tab?.url) return toast('Nothing to bookmark yet.');
   try {
@@ -589,7 +613,32 @@ $('starBtn').addEventListener('click', async () => {
   } catch (err) {
     toast(`Bookmark failed: ${err.message}`);
   }
+}
+
+$('homeBtn').addEventListener('click', goHome);
+function setSidebar(open) {
+  els.sidebar.classList.toggle('hidden', !open);
+  const showScrim = open && isNarrow();
+  els.scrim.hidden = !showScrim;
+  document.body.classList.toggle('drawer-open', showScrim);
+}
+
+function toggleSidebar() {
+  setSidebar(els.sidebar.classList.contains('hidden'));
+}
+
+$('sidebarBtn').addEventListener('click', toggleSidebar);
+$('scrim').addEventListener('click', () => setSidebar(false));
+
+// Tapping a history/bookmark entry on a phone should reveal the page, not
+// leave the drawer covering it.
+els.sidebar.addEventListener('click', (event) => {
+  if (isNarrow() && event.target.closest('.item')) setSidebar(false);
 });
+$('errorDismiss').addEventListener('click', () => { els.errorbar.hidden = true; });
+
+$('starBtn').addEventListener('click', toggleBookmark);
+$('viewBtn').addEventListener('click', () => setViewMode(state.viewMode === 'desktop' ? 'fit' : 'desktop'));
 
 $('omniboxForm').addEventListener('submit', (event) => {
   event.preventDefault();
@@ -687,6 +736,11 @@ els.menu.addEventListener('click', async (event) => {
     return;
   }
   if (act === 'newtab') return createTab();
+  if (act === 'sidebar') return toggleSidebar();
+  if (act === 'home') return goHome();
+  if (act === 'reload') return reload();
+  if (act === 'bookmark') return toggleBookmark();
+  if (act === 'viewmode') return setViewMode(state.viewMode === 'desktop' ? 'fit' : 'desktop');
   if (act === 'clearcookies') {
     await api('/api/cookies', { method: 'DELETE' });
     loadCookies();
@@ -754,6 +808,66 @@ $('sideTabs').addEventListener('click', (event) => {
   if (name === 'about') loadInfo();
 });
 
+/* ------------------------------------------------------------- view mode */
+function applyViewMode() {
+  const vp = document.querySelector('.viewport');
+  if (!vp) return;
+  const desktop = state.viewMode === 'desktop';
+  vp.classList.toggle('desktop', desktop);
+
+  if (desktop) {
+    // Emulate a desktop layout viewport and scale the whole frame down, so the
+    // page's own CSS sees 1280px while the phone still shows all of it.
+    const width = Math.max(1, vp.clientWidth);
+    const height = Math.max(1, vp.clientHeight);
+    const scale = width / DESKTOP_WIDTH;
+    vp.style.setProperty('--dv-width', `${DESKTOP_WIDTH}px`);
+    vp.style.setProperty('--dv-scale', String(scale.toFixed(4)));
+    vp.style.setProperty('--dv-height', `${Math.round(height / scale)}px`);
+  } else {
+    vp.style.removeProperty('--dv-width');
+    vp.style.removeProperty('--dv-scale');
+    vp.style.removeProperty('--dv-height');
+  }
+
+  $('viewBtn').title = desktop ? 'Switch to fit-width view' : 'Switch to desktop viewport';
+  $('viewBtn').textContent = desktop ? '▣' : '▭';
+  const item = $('viewModeItem');
+  if (item) item.textContent = `Desktop viewport: ${desktop ? 'on' : 'off'}`;
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode === 'desktop' ? 'desktop' : 'fit';
+  try { localStorage.setItem('bp.viewMode', state.viewMode); } catch { /* ignore */ }
+  applyViewMode();
+  toast(state.viewMode === 'desktop' ? 'Desktop viewport on — pinch to read' : 'Fit to screen');
+}
+
+/* ---------------------------------------------------- responsive plumbing */
+let lastNarrow = null;
+function syncLayout() {
+  const narrow = isNarrow();
+  if (narrow !== lastNarrow) {
+    // Entering phone layout: start with the drawer closed. Leaving it: the
+    // sidebar is a column again, so make sure it isn't left translated away.
+    setSidebar(!narrow);
+    lastNarrow = narrow;
+  }
+  state.narrow = narrow;
+  applyViewMode();
+}
+
+window.addEventListener('resize', syncLayout);
+window.addEventListener('orientationchange', () => setTimeout(syncLayout, 120));
+// Mobile keyboards and URL-bar collapse resize the *visual* viewport without
+// firing a window resize on some browsers.
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    clearTimeout(syncLayout._t);
+    syncLayout._t = setTimeout(syncLayout, 80);
+  });
+}
+
 /* -------------------------------------------------------------- shortcuts */
 window.addEventListener('keydown', (event) => {
   const mod = event.ctrlKey || event.metaKey;
@@ -761,6 +875,7 @@ window.addEventListener('keydown', (event) => {
     els.modal.classList.remove('open');
     els.menu.classList.remove('open');
     els.suggest.classList.remove('open');
+    if (isNarrow() && !els.sidebar.classList.contains('hidden')) setSidebar(false);
     return;
   }
   if (mod && event.key.toLowerCase() === 't') { event.preventDefault(); createTab(); return; }
@@ -771,7 +886,7 @@ window.addEventListener('keydown', (event) => {
   }
   if (mod && event.key.toLowerCase() === 'l') { event.preventDefault(); els.omnibox.focus(); return; }
   if (mod && event.key.toLowerCase() === 'r') { event.preventDefault(); reload(); return; }
-  if (mod && event.key.toLowerCase() === 'b') { event.preventDefault(); els.sidebar.classList.toggle('hidden'); return; }
+  if (mod && event.key.toLowerCase() === 'b') { event.preventDefault(); toggleSidebar(); return; }
   if (mod && /^[1-9]$/.test(event.key)) {
     const index = Number(event.key) - 1;
     if (state.tabs[index]) { event.preventDefault(); selectTab(state.tabs[index].id); }
@@ -826,10 +941,20 @@ function restoreSession() {
 /* --------------------------------------------------------------------- boot */
 async function boot() {
   try {
+    const savedMode = localStorage.getItem('bp.viewMode');
+    if (savedMode === 'desktop' || savedMode === 'fit') state.viewMode = savedMode;
+  } catch {
+    /* ignore */
+  }
+
+  try {
     await loadInfo();
   } catch {
     /* info is cosmetic; the API calls below will surface real failures */
   }
+
+  syncLayout();
+  applyViewMode();
   loadHistory();
   loadTilesHint();
   if (!restoreSession()) createTab();

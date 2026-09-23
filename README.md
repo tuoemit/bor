@@ -146,6 +146,42 @@ your browser with the server doing ~50 MB of work instead of ~500 MB.
 
 ---
 
+## Phone & touch support
+
+The panel is built mobile-first from the top down, so the whole thing is usable on a phone with
+no app, no native shell, and no separate layout to maintain.
+
+* **Drawer sidebar.** Below 900 px the sidebar stops being a column and becomes a slide-over
+  drawer with a scrim; it closes itself when you pick a history/bookmark entry, and it can't be
+  tab-focused while off-screen.
+* **Condensed chrome.** Below 620 px the wordmark, engine chip and status bar drop out and the
+  toolbar tightens. *Home*, *Bookmark*, *Reload*, *Toggle sidebar*, *Desktop viewport* and the
+  source viewer all move into the **⋯** menu so nothing becomes unreachable; below 380 px the
+  reload button joins them.
+* **Real viewport height.** The shell uses `100dvh` with a `100vh` fallback, and re-measures on
+  `visualViewport` resize, so the collapsing mobile address bar and the on-screen keyboard don't
+  clip the UI.
+* **Safe areas.** `viewport-fit=cover` plus `env(safe-area-inset-*)` padding keeps the toolbar out
+  from under the notch and the bottom sheet above the home indicator.
+* **Touch, not hover.** Delete buttons and tab close buttons are hover-gated on desktop but always
+  visible under `@media (hover: none)`; targets are ≥ 40 px on coarse pointers; tap highlight and
+  double-tap zoom are suppressed on controls.
+* **No iOS focus zoom.** Every input is 16 px on small screens, which is the threshold below which
+  Safari zooms the viewport when a field is focused.
+* **Desktop viewport mode.** Sites that are unusable at 360 px (old dashboards, wide data tables)
+  can be laid out at 1280 px and scaled to fit the screen — tap **▭** in the toolbar or use the
+  ⋯ menu. It's a client-side transform only: nothing changes server-side, and the page still
+  renders in your browser. Your choice persists in `localStorage`.
+* **Menus and modals adapt.** The ⋯ menu becomes a bottom sheet on phones and the source viewer
+  goes full-bleed.
+
+Worth knowing: touch gestures inside the **webview** belong to the remote page, so panel gestures
+(pull-to-refresh, edge-swipe-to-open-the-drawer) are deliberately absent — use the toolbar and the
+drawer button. Keyboard shortcuts (Ctrl+T etc.) are desktop conveniences; every one of them has a
+menu or button equivalent for touch.
+
+---
+
 ## Known limitations (please read)
 
 These are inherent to "no Chromium + datacenter IP", not bugs to fix later:
