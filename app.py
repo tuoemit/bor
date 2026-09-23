@@ -1,6 +1,8 @@
 import atexit
 import os
 import threading
+import shutil
+import time
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -53,15 +55,15 @@ def _ensure_browser():
             _pw = sync_playwright().start()
 
         if _browser is None or not _browser.is_connected():
+            executable = os.environ.get("CHROMIUM_PATH") or shutil.which("chromium") or shutil.which("chromium-browser") or "/usr/bin/chromium"
             _browser = _pw.chromium.launch(
-                executable_path=os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium"),
+                executable_path=executable,
                 headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--disable-software-rasterizer",
-                    "--disable-background-networking",
                     "--disable-background-timer-throttling",
                     "--disable-breakpad",
                     "--disable-component-update",
@@ -73,6 +75,7 @@ def _ensure_browser():
                     "--metrics-recording-only",
                     "--no-first-run",
                     "--no-zygote",
+                    "--window-size=390,844",
                 ],
             )
 
@@ -85,15 +88,19 @@ def _ensure_browser():
                 device_scale_factor=1,
                 locale="en-US",
                 timezone_id="UTC",
+                ignore_https_errors=True,
                 user_agent=(
                     "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/128.0 Mobile Safari/537.36"
+                    "Chrome/140.0.0.0 Mobile Safari/537.36"
                 ),
             )
             _page = _context.new_page()
             _page.set_default_timeout(7000)
-            _page.goto("https://example.com", wait_until="domcontentloaded", timeout=15000)
+            try:
+                _page.goto("https://example.com", wait_until="commit", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
         return _page
 
 
@@ -151,9 +158,18 @@ def navigate():
         url = _safe_url(request.json.get("url", ""))
         with _browser_lock:
             page = _ensure_browser()
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            try:
+                page.goto(url, wait_until="commit", timeout=15000)
+            except PlaywrightTimeoutError:
+                # A slow site may still be loading. Keep the page and let the UI
+                # screenshot it instead of treating the navigation as a failure.
+                pass
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except PlaywrightTimeoutError:
+                pass
         return jsonify({"ok": True, **_page_info()})
-    except (ValueError, PlaywrightTimeoutError) as exc:
+    except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc), **_page_info()}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -170,13 +186,13 @@ def action():
         with _browser_lock:
             page = _ensure_browser()
             if name == "back":
-                page.go_back(wait_until="domcontentloaded", timeout=10000)
+                page.go_back(wait_until="commit", timeout=10000)
             elif name == "forward":
-                page.go_forward(wait_until="domcontentloaded", timeout=10000)
+                page.go_forward(wait_until="commit", timeout=10000)
             elif name == "reload":
-                page.reload(wait_until="domcontentloaded", timeout=15000)
+                page.reload(wait_until="commit", timeout=15000)
             elif name == "home":
-                page.goto("https://example.com", wait_until="domcontentloaded", timeout=15000)
+                page.goto("https://example.com", wait_until="commit", timeout=15000)
             elif name == "scroll_up":
                 page.mouse.wheel(0, -560)
             elif name == "scroll_down":
