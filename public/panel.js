@@ -19,6 +19,7 @@ const els = {
   fidelity: $('fidelity'), fidImg: $('fidImg'), fidScroll: $('fidScroll'),
   fidMeta: $('fidMeta'), fidTitle: $('fidTitle'), fidelityItem: $('fidelityItem'),
   readerItem: $('readerItem'), errorFidelity: $('errorFidelity'),
+  findbar: $('findbar'), findInput: $('findInput'), findCount: $('findCount'),
 };
 
 const state = {
@@ -35,6 +36,8 @@ const state = {
   // Servo sidecar ("fidelity mode") availability, from /api/engine.
   servo: { available: false, status: 'disabled', version: null, hint: null },
   fidelity: { url: null, full: false, open: false, loadedAt: 0 },
+  zoom: 1,
+  find: { open: false, query: '', count: 0, index: -1 },
 };
 
 const NARROW = '(max-width: 900px)';
@@ -155,6 +158,7 @@ function showTab(tab) {
   updateChrome(tab);
   if (tab.path) {
     if (state.fidelity.open) closeFidelity();
+    setTimeout(() => applyZoom(state.zoom, { persist: false }), 60);
     if (els.frame.getAttribute('src') !== tab.path) els.frame.setAttribute('src', tab.path);
     els.frame.hidden = false;
     els.startpage.hidden = true;
@@ -583,6 +587,31 @@ window.addEventListener('message', (event) => {
     return;
   }
 
+  if (data.type === 'find-result') {
+    state.find.count = data.count ?? 0;
+    state.find.index = data.index ?? -1;
+    els.findCount.textContent = state.find.count
+      ? `${state.find.index + 1}/${state.find.count}`
+      : 'no matches';
+    return;
+  }
+
+  if (data.type === 'zoom-applied') {
+    // Native CSS zoom worked: drop the iframe-transform fallback.
+    const native = data.native !== false;
+    if (native !== state.zoomNative) {
+      state.zoomNative = native;
+      applyZoom(state.zoom, { persist: false });
+    }
+    return;
+  }
+
+  if (data.type === 'ready') {
+    // Re-apply per-page state after every navigation.
+    applyZoom(state.zoom, { persist: false });
+    if (state.find.open && state.find.query) runFind(state.find.query);
+  }
+
   if (data.type === 'error') {
     setNote(`script error on page: ${data.message.slice(0, 60)}`);
     return;
@@ -755,6 +784,10 @@ els.menu.addEventListener('click', async (event) => {
   if (act === 'bookmark') return toggleBookmark();
   if (act === 'viewmode') return setViewMode(state.viewMode === 'desktop' ? 'fit' : 'desktop');
   if (act === 'fidelity') return showFidelity(fidelityUrl(tab), { force: true });
+  if (act === 'find') return openFind();
+  if (act === 'zoom-in') return zoomStep(1);
+  if (act === 'zoom-out') return zoomStep(-1);
+  if (act === 'zoom-reset') return applyZoom(1);
   if (act === 'reader') return openReader(fidelityUrl(tab));
   if (act === 'clearcookies') {
     await api('/api/cookies', { method: 'DELETE' });
@@ -844,6 +877,8 @@ function applyViewMode() {
     vp.style.removeProperty('--dv-scale');
     vp.style.removeProperty('--dv-height');
   }
+
+  applyZoom(state.zoom, { persist: false });
 
   $('viewBtn').title = desktop ? 'Switch to fit-width view' : 'Switch to desktop viewport';
   $('viewBtn').textContent = desktop ? '▣' : '▭';
@@ -989,16 +1024,115 @@ $('errorFidelity').addEventListener('click', () => {
 });
 setFidelityFit(true);
 
+/* ----------------------------------------------------------- find + zoom */
+function framePost(message) {
+  const win = els.frame.contentWindow;
+  if (!win) return;
+  try {
+    win.postMessage({ __bpCmd: 1, ...message }, '*');
+  } catch {
+    /* frame went away mid-navigation */
+  }
+}
+
+function openFind() {
+  if (!activeTab()?.path) return toast('Open a page first.');
+  state.find.open = true;
+  els.findbar.hidden = false;
+  els.findInput.focus();
+  els.findInput.select();
+  if (state.find.query) framePost({ type: 'find', query: state.find.query });
+}
+
+function closeFind() {
+  state.find.open = false;
+  els.findbar.hidden = true;
+  framePost({ type: 'find', query: null }); // clears highlights
+  els.findCount.textContent = '0/0';
+  state.find.query = '';
+}
+
+function runFind(query) {
+  state.find.query = query;
+  if (!query) {
+    framePost({ type: 'find', query: null });
+    els.findCount.textContent = '0/0';
+    return;
+  }
+  framePost({ type: 'find', query });
+}
+
+function stepFind(delta) {
+  if (!state.find.query) return;
+  framePost({ type: 'find-step', dir: delta });
+}
+
+els.findInput.addEventListener('input', () => runFind(els.findInput.value));
+els.findInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    stepFind(event.shiftKey ? -1 : 1);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeFind();
+  }
+});
+$('findNext').addEventListener('click', () => stepFind(1));
+$('findPrev').addEventListener('click', () => stepFind(-1));
+$('findClose').addEventListener('click', closeFind);
+
+/* Zoom. Preferred path is the page's own documentElement.style.zoom (true
+   reflow, crisp text). If the page rejects that we fall back to scaling the
+   iframe element itself. */
+const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ZOOM_FALLBACK = true;
+
+function applyZoom(level, { persist = true } = {}) {
+  state.zoom = Math.max(0.25, Math.min(3, Number(level) || 1));
+  framePost({ type: 'zoom', level: state.zoom });
+
+  // Native CSS zoom (Chromium, Firefox 126+, Safari) reflows text properly and
+  // is always preferred. The iframe-transform fallback is only used when the
+  // page reports it can't do native zoom -- and never in desktop-viewport mode,
+  // which already owns the frame's transform.
+  const useFallback = ZOOM_FALLBACK && !state.zoomNative && state.viewMode !== 'desktop';
+  els.frame.style.transformOrigin = '0 0';
+  els.frame.style.transform = useFallback ? `scale(${state.zoom})` : '';
+  els.frame.style.width = useFallback ? `${100 / state.zoom}%` : '';
+  els.frame.style.height = useFallback ? `${100 / state.zoom}%` : '';
+
+  const pct = Math.round(state.zoom * 100);
+  $('zoomItem').textContent = `Reset zoom (${pct}%)`;
+  const pill = $('statusZoom');
+  if (pill) pill.textContent = `${pct}%`;
+  if (persist) {
+    try { localStorage.setItem('bp.zoom', String(state.zoom)); } catch { /* ignore */ }
+  }
+}
+
+function zoomStep(direction) {
+  const i = ZOOM_STEPS.findIndex((v) => Math.abs(v - state.zoom) < 0.001);
+  const next = i === -1
+    ? ZOOM_STEPS.reduce((best, v) => (Math.abs(v - state.zoom) < Math.abs(best - state.zoom) ? v : best), 1)
+    : ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + direction))];
+  applyZoom(next);
+}
+
 /* -------------------------------------------------------------- shortcuts */
 window.addEventListener('keydown', (event) => {
   const mod = event.ctrlKey || event.metaKey;
   if (event.key === 'Escape') {
+    if (state.find.open) { closeFind(); return; }
     els.modal.classList.remove('open');
     els.menu.classList.remove('open');
     els.suggest.classList.remove('open');
     if (isNarrow() && !els.sidebar.classList.contains('hidden')) setSidebar(false);
     return;
   }
+  if (mod && event.key.toLowerCase() === 'f') { event.preventDefault(); openFind(); return; }
+  if (mod && (event.key === '=' || event.key === '+')) { event.preventDefault(); zoomStep(1); return; }
+  if (mod && (event.key === '-' || event.key === '_')) { event.preventDefault(); zoomStep(-1); return; }
+  if (mod && event.key === '0') { event.preventDefault(); applyZoom(1); return; }
   if (mod && event.key.toLowerCase() === 't') { event.preventDefault(); createTab(); return; }
   if (mod && event.key.toLowerCase() === 'w') {
     event.preventDefault();
@@ -1064,6 +1198,8 @@ async function boot() {
   try {
     const savedMode = localStorage.getItem('bp.viewMode');
     if (savedMode === 'desktop' || savedMode === 'fit') state.viewMode = savedMode;
+    const savedZoom = Number(localStorage.getItem('bp.zoom'));
+    if (Number.isFinite(savedZoom) && savedZoom >= 0.25 && savedZoom <= 3) state.zoom = savedZoom;
   } catch {
     /* ignore */
   }

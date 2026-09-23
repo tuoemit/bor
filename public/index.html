@@ -112,6 +112,14 @@
         <button class="btn ghost" id="errorDismiss">Dismiss</button>
       </div>
 
+      <div class="findbar" id="findbar" hidden>
+        <input id="findInput" placeholder="Find in page…" spellcheck="false" autocomplete="off">
+        <span class="count" id="findCount">0/0</span>
+        <button class="icon-btn" id="findPrev" title="Previous (Shift+Enter)">↑</button>
+        <button class="icon-btn" id="findNext" title="Next (Enter)">↓</button>
+        <button class="icon-btn" id="findClose" title="Close (Esc)">✕</button>
+      </div>
+
       <div class="fidelity" id="fidelity" hidden>
         <div class="fbar">
           <span class="ftitle" id="fidTitle">Servo render</span>
@@ -141,6 +149,7 @@
     <span class="pill" id="statusEngine">engine: proxy</span>
     <span class="pill" id="statusPlatform">platform: …</span>
     <span class="pill" id="statusStore">store: …</span>
+    <span class="pill" id="statusZoom">100%</span>
     <span class="grow"></span>
     <span id="statusNote">ready</span>
     <span class="sep">·</span>
@@ -153,6 +162,10 @@
   <button data-act="home">Home / new tab page</button>
   <button data-act="bookmark">Bookmark this page <small>☆</small></button>
   <button data-act="viewmode" id="viewModeItem">Desktop viewport: off</button>
+  <button data-act="find">Find in page <small>Ctrl+F</small></button>
+  <button data-act="zoom-in">Zoom in <small>Ctrl +</small></button>
+  <button data-act="zoom-out">Zoom out <small>Ctrl −</small></button>
+  <button data-act="zoom-reset" id="zoomItem">Reset zoom (100%)</button>
   <hr>
   <button data-act="fidelity" id="fidelityItem">Servo render (real engine)</button>
   <button data-act="reader" id="readerItem">Reader mode (text only)</button>

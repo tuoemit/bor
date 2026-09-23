@@ -9,6 +9,7 @@
 // it disabled (the panel degrades to proxy-only and says so).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import { config } from '../config.js';
 import { log } from '../log.js';
 
@@ -29,6 +30,43 @@ let starting = null;
 let idleTimer = null;
 let shuttingDown = false;
 
+/**
+ * Container memory ceiling. Railway (and Docker generally) sets a cgroup
+ * limit; cgroup v2 uses memory.max, v1 uses memory.limit_in_bytes.
+ * Returns MB, or null when unlimited/unknown.
+ */
+export function memoryLimitMb() {
+  for (const file of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8').trim();
+      if (!raw || raw === 'max') continue;
+      const bytes = Number.parseInt(raw, 10);
+      if (!Number.isFinite(bytes) || bytes <= 0) continue;
+      if (bytes > 1024 ** 4) continue; // v1 "unlimited" sentinel
+      return Math.round(bytes / 1048576);
+    } catch {
+      /* try the next source */
+    }
+  }
+  const total = os.totalmem?.();
+  return Number.isFinite(total) && total > 0 ? Math.round(total / 1048576) : null;
+}
+
+let memoryBlockedReason = null;
+
+function checkMemoryHeadroom() {
+  const limit = memoryLimitMb();
+  if (limit !== null && limit < servo.minMemoryMb) {
+    memoryBlockedReason =
+      `This container is limited to ${limit} MB but fidelity mode needs ~${servo.minMemoryMb} MB at peak. ` +
+      'Raise the service memory limit (Railway: Settings → Resources — 2 GB recommended), set ' +
+      'APP_ENGINE=proxy to silence this, or lower SERVO_MIN_MEMORY_MB to override.';
+    note('warn', memoryBlockedReason);
+    return false;
+  }
+  return true;
+}
+
 function binaryLooksRunnable() {
   try {
     fs.accessSync(servo.bin, fs.constants.X_OK);
@@ -43,13 +81,38 @@ export function isEnabled() {
 }
 
 export function isAvailable() {
-  return isEnabled() && binaryLooksRunnable();
+  return isEnabled() && !memoryBlockedReason && binaryLooksRunnable();
 }
+
+/* ------------------------------------------------------------- render queue */
+// Serialised by default: one render at a time keeps peak memory predictable.
+let activeRenders = 0;
+const waiting = [];
+
+export async function withRenderSlot(fn) {
+  if (activeRenders >= servo.maxConcurrent) {
+    await new Promise((resolve) => waiting.push(resolve));
+  }
+  activeRenders += 1;
+  try {
+    return await fn();
+  } finally {
+    activeRenders -= 1;
+    const next = waiting.shift();
+    if (next) next();
+  }
+}
+
+export const renderQueueDepth = () => waiting.length;
 
 export function status() {
   return {
     enabled: isEnabled(),
     available: isAvailable(),
+    blockedReason: memoryBlockedReason,
+    memoryLimitMb: memoryLimitMb(),
+    queued: renderQueueDepth(),
+    concurrent: servo.maxConcurrent,
     status: isAvailable() ? state.status : 'disabled',
     version: state.version,
     pid: state.pid,
@@ -59,9 +122,10 @@ export function status() {
     viewport: servo.viewport,
     hint: isAvailable()
       ? null
-      : isEnabled()
-        ? 'Sidecar binary not found. Run `npm run servo:install`, or set SERVO_BIN.'
-        : 'Disabled via SERVO_ENABLED=0.',
+      : memoryBlockedReason ??
+        (isEnabled()
+          ? 'Sidecar binary not found. Run `npm run servo:install`, or set SERVO_BIN.'
+          : 'Disabled via SERVO_ENABLED=0.'),
   };
 }
 
@@ -249,3 +313,14 @@ export function stop() {
   state.status = 'stopped';
   state.pid = null;
 }
+
+// Evaluate the container budget at load, so the panel can explain *why*
+// fidelity mode is off before anything is rendered.
+checkMemoryHeadroom();
+
+// Re-check periodically: raising the limit should re-enable the engine.
+setInterval(() => {
+  const wasBlocked = Boolean(memoryBlockedReason);
+  memoryBlockedReason = null;
+  if (wasBlocked && checkMemoryHeadroom()) note('info', 'memory headroom now sufficient — fidelity enabled');
+}, 5 * 60_000).unref?.();

@@ -11,6 +11,8 @@ const asInt = (v, dflt) => {
   return Number.isFinite(n) ? n : dflt;
 };
 
+const mode = String(process.env.APP_ENGINE ?? 'hybrid').trim().toLowerCase();
+
 const asList = (v) =>
   String(v ?? '')
     .split(',')
@@ -63,7 +65,9 @@ export const config = {
   // proxy can't handle, served as prebuilt screenshots and reader-mode text.
   // Lazy: nothing is spawned until the first request that needs it.
   servo: {
-    enabled: asBool(process.env.SERVO_ENABLED, true),
+    // APP_ENGINE=proxy  -> proxy only, never starts the engine
+    // APP_ENGINE=hybrid -> proxy + fidelity mode (default)
+    enabled: mode !== 'proxy' && asBool(process.env.SERVO_ENABLED, true),
     bin: (process.env.SERVO_BIN ?? '').trim() || path.join(process.cwd(), 'bin', 'servo-fetch'),
     host: (process.env.SERVO_HOST ?? '').trim() || '127.0.0.1',
     port: asInt(process.env.SERVO_PORT, 9233),
@@ -72,9 +76,16 @@ export const config = {
     maxRestarts: asInt(process.env.SERVO_MAX_RESTARTS, 3),
     viewport: (process.env.SERVO_VIEWPORT ?? '').trim() || '1280x800',
     idleShutdownMs: asInt(process.env.SERVO_IDLE_SHUTDOWN_MS, 5 * 60_000),
+    // A heavy page peaks around 500 MB. Serialise renders so two at once
+    // can't OOM the container, and refuse to start the engine at all if the
+    // container is too small for it.
+    maxConcurrent: asInt(process.env.SERVO_MAX_CONCURRENT, 1),
+    minMemoryMb: asInt(process.env.SERVO_MIN_MEMORY_MB, 1100),
   },
 
-  version: '1.2.0',
+  engineMode: mode,
+
+  version: '1.3.0',
 };
 
 // Hop-by-hop headers must never be forwarded (RFC 9110 7.6.1).

@@ -12,7 +12,7 @@ import * as cheerio from 'cheerio';
 import { config } from '../config.js';
 import { log } from '../log.js';
 import { ProxyError } from '../util/net.js';
-import { ensureRunning, status, touch } from './manager.js';
+import { ensureRunning, status, touch, withRenderSlot } from './manager.js';
 
 const { servo } = config;
 
@@ -61,10 +61,12 @@ export async function screenshot(url, { fullPage = false, width, height } = {}) 
   if (height) body.viewportHeight = height;
 
   log.debug(`[servo] screenshot ${url}${fullPage ? ' (full page)' : ''}`);
-  const res = await call('/v1/screenshot', { body, accept: 'image/png' });
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (!buffer.length) throw new ProxyError(502, 'Servo returned an empty image', 'servo_empty');
-  return { buffer, contentType: res.headers.get('content-type') ?? 'image/png' };
+  return withRenderSlot(async () => {
+    const res = await call('/v1/screenshot', { body, accept: 'image/png' });
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!buffer.length) throw new ProxyError(502, 'Servo returned an empty image', 'servo_empty');
+    return { buffer, contentType: res.headers.get('content-type') ?? 'image/png' };
+  });
 }
 
 function stripHtml(html) {
@@ -75,9 +77,11 @@ function stripHtml(html) {
 }
 
 async function rawFetch(url, format) {
-  const res = await call('/v1/fetch', { body: { url, format }, accept: 'application/json' });
-  const data = await res.json();
-  return typeof data.content === 'string' ? data.content : '';
+  return withRenderSlot(async () => {
+    const res = await call('/v1/fetch', { body: { url, format }, accept: 'application/json' });
+    const data = await res.json();
+    return typeof data.content === 'string' ? data.content : '';
+  });
 }
 
 /**

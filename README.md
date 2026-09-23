@@ -25,41 +25,86 @@ Chrome alone would need ~500 MB and a build step that free tiers will time out o
 
 ---
 
-## Deploy in 3 minutes
+## Deploy on Railway
 
-### Render
+Railway is the recommended target: it gives you the volume and the memory that
+fidelity mode needs, and it builds the included `Dockerfile` with no config.
 
-**Option A — Blueprint (recommended).** Push this folder to a Git repo, then in Render:
-*New +* → *Blueprint* → pick the repo. Render reads `render.yaml`, builds the `Dockerfile`,
-asks you for `APP_PASSWORD`, and deploys.
-
-**Option B — manual.** *New +* → *Web Service* → your repo →
-Runtime **Docker** → Health check path `/healthz` → add env var `APP_PASSWORD`.
-
-### Railway
-
-**Option A — CLI.**
+### 1. Deploy
 
 ```bash
 npm i -g @railway/cli
 railway login
-railway init              # create a project
-railway variables --set APP_PASSWORD='your-password'
-railway up                # builds the Dockerfile
-railway domain            # generate a public URL
+railway init                      # create a project
+railway up                        # builds the Dockerfile and deploys
+railway variables --set APP_PASSWORD='your-strong-password'
+railway domain                    # generate a public https://*.up.railway.app URL
 ```
 
-**Option B — dashboard.** *New Project* → *Deploy from GitHub repo*. Railway detects the
-`Dockerfile` and `railway.json`; then add `APP_PASSWORD` under *Variables* and hit *Deploy*.
-Railway injects `PORT` itself — the app honours it automatically.
+Or from the dashboard: **New Project → Deploy from GitHub repo**. Railway detects
+`Dockerfile` + `railway.json`, and you add `APP_PASSWORD` under **Variables**.
 
-### Docker locally
+### 2. Give it memory (required for fidelity mode)
+
+Railway defaults a service to a low memory limit. The panel tells you when it's
+too small — the log prints the exact number it detected, and the menu shows the
+reason instead of silently failing.
+
+**Settings → Resources → Memory: 2 GB** (8192 CPU shares / 1 vCPU is plenty).
+
+| Service memory | What works |
+|---|---|
+| 512 MB | Proxy only. The panel auto-disables fidelity mode and says why. |
+| 1 GB | Proxy + occasional fidelity render (one at a time). Full-page renders may fail. |
+| **2 GB** | Everything, comfortably — the recommended setting. |
+
+Renders are **serialised** (`SERVO_MAX_CONCURRENT=1`) so two heavy pages can't
+collide, and the engine shuts down after 5 minutes idle to release ~450 MB.
+
+### 3. Add a volume (makes it a real browser, not a demo)
+
+Without a volume, history, bookmarks, cookies and saved sessions are lost on every
+redeploy and restart — on Railway that's every push.
+
+**Settings → Volumes → New Volume**, mount path **`/data`**.
+
+That's all: the image already sets `DB_PATH=/data/browser.db`, so the next deploy
+comes up persistent. Check **About** in the sidebar — it says *persistent* with the
+path when the volume is mounted, *in-memory* when it isn't.
+
+> The volume can only attach to one replica, which is why `railway.json` pins
+> `numReplicas: 1`. Session signing is stateless, so horizontal scaling would
+> work for *logins* — it's the SQLite history/cookies that need the single copy.
+
+### 4. Recommended variables
+
+| Variable | Value | Why |
+|---|---|---|
+| `APP_PASSWORD` | *required* | Panel password. Without it, a random one is printed to the logs each boot. |
+| `SESSION_SECRET` | any long random string | Keeps you logged in across password changes and redeploys. |
+| `APP_ENGINE` | `hybrid` (default) / `proxy` | `proxy` = never start the engine, useful if you drop back to a smaller plan. |
+| `SERVO_IDLE_SHUTDOWN_MS` | `300000` | Free ~450 MB after 5 min idle. `0` keeps it warm (faster, costs more). |
+| `SERVO_MAX_CONCURRENT` | `1` | Raise only on 4 GB+ services. |
+| `CSP_FRAME_ANCESTORS` | leave as `self` | Only widen if you embed the panel in another site. |
+
+### 5. What it costs
+
+Railway bills by usage (~$0.000231/GB-min RAM, ~$0.000463/vCPU-min). A 2 GB
+service at 1 vCPU running 24/7 lands around **$15–20/month**; with the sidecar
+idle-shutting-down, closer to **$12–15**. The proxy-only configuration on 1 GB is
+roughly half that. Idle boot uses ~73 MB, so most of the budget is headroom the
+browser engine uses only while you're actually rendering.
+
+### 6. Sanity check after deploy
 
 ```bash
-docker build -t browser-panel .
-docker run -p 8080:8080 -e APP_PASSWORD=your-password browser-panel
-# → http://localhost:8080
+railway logs                       # expect: "fidelity: Servo sidecar available"
+curl https://YOUR-APP.up.railway.app/healthz
 ```
+
+Then open the URL, log in, and check **⋯ → Servo render** — if the memory limit is
+too low you'll get a precise message telling you the current limit instead of a
+cryptic failure.
 
 ---
 
@@ -80,7 +125,10 @@ Everything is env vars, so the same image runs anywhere.
 | `ALLOW_PRIVATE_HOSTS` | `0` | **Leave off.** Enables the SSRF guard; off means `169.254.169.254`, `127.0.0.1` and the private network are unreachable through the panel. |
 | `BLOCKED_HOSTS` | – | Comma-separated hosts to refuse (e.g. your own admin host). |
 | `CSP_FRAME_ANCESTORS` | `'self'` | Widen to `*` if the *panel itself* is embedded in another site's iframe. |
+| `APP_ENGINE` | `hybrid` | `hybrid` = proxy + fidelity engine, `proxy` = proxy only. |
 | `SERVO_ENABLED` | `1` | Fidelity mode: use the Servo sidecar when its binary is present. |
+| `SERVO_MAX_CONCURRENT` | `1` | Simultaneous renders (raise only on 4 GB+). |
+| `SERVO_MIN_MEMORY_MB` | `1100` | Refuse to start the engine below this container limit. |
 | `SERVO_BIN` | `./bin/servo-fetch` | Path to the sidecar binary. |
 | `SERVO_PORT` | `9233` | Sidecar port (bound to 127.0.0.1 only). |
 | `SERVO_IDLE_SHUTDOWN_MS` | `300000` | Stop the sidecar after this long idle, freeing ~450 MB. `0` keeps it warm. |
@@ -103,6 +151,10 @@ Without a volume the app detects the unwritable path and quietly runs in-memory
 ## What's in the panel
 
 * **Tabs** (Ctrl+T / Ctrl+W / Ctrl+1…9), back/forward, reload, home.
+* **Find in page** (Ctrl+F) — highlights and steps through matches inside the
+  proxied frame, across the sandbox boundary.
+* **Zoom** (Ctrl +/-/0) — true reflow zoom via the page's own `zoom`, with an
+  iframe-transform fallback for engines that lack it. Persists per browser.
 * **Address bar** with live suggestions from your bookmarks, top sites and history, plus
   search fallback when what you typed isn't a URL.
 * **History / Bookmarks / Top sites** stored server-side in SQLite, so they follow you
@@ -261,6 +313,13 @@ APP_PASSWORD=dev DB_PATH=./data/browser.db npm start
 # → http://localhost:8080
 ```
 
+Add the fidelity engine (optional):
+
+```bash
+npm run servo:install      # prebuilt Servo binary, no Rust toolchain needed
+npm start                  # panel detects it and enables fidelity mode
+```
+
 `npm run dev` uses `node --watch` for restarts. There are no native modules to build — SQLite
 is `sql.js` (WASM) — so installs are fast and cold starts are short.
 
@@ -286,7 +345,10 @@ is `sql.js` (WASM) — so installs are fast and cold starts are short.
 | Page loads but assets are missing | Open **View upstream source** and check whether the HTML hardcodes absolute URLs in JS. Also check the logs for `private_ip` or `dns_failure` lines. |
 | Infinite/blank loading | Likely a heavy SPA exceeding `MAX_INFLIGHT_PER_SESSION`; raise it, or check the logs for `429`. |
 | Logs say "generated a one-time password" | `APP_PASSWORD` isn't set. Set it, or copy the password from the logs (sessions reset on restart). |
-| History is empty after a redeploy | No volume. See *Keeping state across deploys*. |
+| History/cookies empty after a redeploy | No volume mounted. On Railway: Settings → Volumes → mount at `/data`. |
+| "This container is limited to N MB…" | Railway memory limit is below `SERVO_MIN_MEMORY_MB`. Raise it in Settings → Resources, or set `APP_ENGINE=proxy`. |
+| Fidelity render times out | First render after idle includes a ~2 s engine cold start; a heavy page can take 30 s on a shared vCPU. Raise `SERVO_TIMEOUT_MS`. |
+| Renders queue up | By design: `SERVO_MAX_CONCURRENT=1` keeps peak memory predictable. Raise it only on a 4 GB+ service. |
 
 ---
 
