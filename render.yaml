@@ -1,22 +1,32 @@
-# Render Blueprint -- https://render.com/docs/blueprint-spec
-# New + > Blueprint > point at your repo. Render fills in the rest.
+# Render blueprint -- "New +" -> "Blueprint" -> pick this repo, OR create the
+# Web Service manually and point it at this file.
+#
+# IMPORTANT: after the service is created, set PANEL_PASSWORD (and optionally
+# SESSION_SECRET / API_TOKEN) in the service's Environment tab. `sync: false`
+# means Render will not invent a value for the password -- you must provide it.
+
 services:
   - type: web
-    name: browser-panel
+    name: cloud-browser
     runtime: docker
-    dockerfilePath: ./Dockerfile
     plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /healthz
-    autoDeploy: true
+    # Free instances sleep after ~15 idle minutes; a request (or an external
+    # pinger hitting /healthz) wakes them and relaunches Firefox (~10-15 s).
     envVars:
-      - key: APP_PASSWORD
-        sync: false # Render prompts you for this on first deploy
+      - key: NODE_ENV
+        value: production
+      - key: PANEL_PASSWORD
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
-      # Fidelity mode (Servo sidecar) needs ~500 MB peak -> paid tier only.
-      # The free plan runs proxy-only; the panel detects this automatically.
-      - key: SERVO_ENABLED
-        value: "0"
-      # Free instances cannot mount disks, so state is lost on redeploy.
-      # On a paid plan, add a disk mounted at /data and the DB_PATH env var
-      # in the Dockerfile (/data/browser.db) will start persisting.
+      - key: API_TOKEN
+        sync: false
+      - key: MAX_TABS
+        value: "3"
+      - key: VIEWPORT_WIDTH
+        value: "1280"
+      - key: VIEWPORT_HEIGHT
+        value: "800"

@@ -1,8 +1,7 @@
 node_modules/
 data/
-*.db
 .env
-.env.local
+.env.*
+*.log
 .DS_Store
-npm-debug.log*
-bin/
+docs/screenshots/

@@ -1,0 +1,21 @@
+# Railway config. Railway detects the Dockerfile automatically and builds the
+# image (which already contains Firefox). These knobs set the runtime behaviour.
+#
+# In the Railway dashboard -> Variables, add at minimum:
+#   PANEL_PASSWORD = <your secret>
+#   SESSION_SECRET = <any long random string>
+#   API_TOKEN      = <optional, for curl/cron automation>
+# Railway injects $PORT automatically; the app binds 0.0.0.0:$PORT.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[service]
+startCommand = "node server/index.js"
+
+[deploy]
+healthcheckPath = "/healthz"
+healthcheckTimeout = 300   # first boot also launches Firefox; be generous
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

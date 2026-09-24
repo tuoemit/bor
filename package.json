@@ -1,23 +1,23 @@
 {
-  "name": "browser-panel",
-  "version": "2.0.0",
+  "name": "cloud-browser",
+  "version": "1.0.0",
+  "description": "Password-protected remote browser panel. Headless Firefox (Gecko) driven over a WebSocket screencast. Deployable on Render and Railway.",
+  "license": "MIT",
   "private": true,
-  "description": "Password-protected remote browser panel. Server-side HTTP reverse proxy + iframe webview (no Chromium). Deploys to Render or Railway.",
-  "type": "module",
-  "main": "server.js",
+  "type": "commonjs",
+  "main": "server/index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=18.17"
   },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "postinstall": "node scripts/postinstall.js",
+    "smoke": "node scripts/smoke-test.js"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
     "express": "^4.21.2",
-    "iconv-lite": "^0.6.3",
-    "playwright-core": "^1.63.0",
-    "sql.js": "^1.13.0",
-    "ws": "^8.21.3"
+    "playwright": "1.63.0",
+    "ws": "^8.18.0"
   }
 }

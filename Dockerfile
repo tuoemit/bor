@@ -1,58 +1,49 @@
-# Chromium engine build for Render / Railway.
+# cloud-browser -- single image that runs on BOTH Render and Railway.
 #
-# Debian, not Alpine: Playwright's Chromium is glibc-linked, and the engine's
-# system libraries (nss, atk, cups, gbm...) come from Playwright itself.
-#
-# Image size is the cost of a real browser: ~800 MB of Chromium plus its
-# dependencies. Railway's builder handles it; it is not a free-tier-friendly
-# deploy (see README for the memory profile).
+# Design: the Firefox (Gecko) build is downloaded DURING the image build, from
+# the exact playwright version pinned in package-lock.json. That guarantees the
+# bundled browser always matches the playwright library at runtime -- no version
+# skew, and no reliance on the platform reaching the Playwright CDN at startup.
+# There is NO Chromium anywhere: only the Firefox build is fetched.
 
-# ---------- stage 1: browser + system deps ----------
-FROM node:22-bookworm-slim AS browsers
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
-# Installs Chromium *and* apt-installs every shared library it needs.
-RUN npx playwright-core install --with-deps chromium  && rm -rf /var/lib/apt/lists/*
+FROM node:20-bookworm-slim
 
-# ---------- stage 2: runtime ----------
-FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
-    PORT=8080 \
-    DB_PATH=/data/browser.db \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    # Node's heap: anything in this container that isn't the browser.
-    NODE_OPTIONS=--max-old-space-size=384
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
-# Runtime libraries Chromium needs. Kept explicit rather than relying on the
-# build stage having them, because this stage starts from a clean base.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
-      libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-      libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libcairo-gobject2 \
-      libx11-6 libxcb1 libxext6 libxi6 libxtst6 libglib2.0-0 \
-      fonts-dejavu-core fontconfig ca-certificates curl tini \
- && fc-cache -f \
- && rm -rf /var/lib/apt/lists/*
+# System libraries Firefox needs to run headless (GTK/NSS/ASound/etc.), plus a
+# couple of build basics. `playwright install-deps` would also work; listing the
+# set explicitly keeps the layer deterministic.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libglib2.0-0 libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
+      libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+      libxrandr2 libgbm1 libxcb1 libxkbcommon0 libasound2 libcairo2 libpango-1.0-0 \
+      fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install JS deps first so app edits don't bust this (large) layer.
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm ci --omit=dev --no-audit --no-fund
 
-COPY . .
-COPY --from=browsers /ms-playwright /ms-playwright
+# Fetch ONLY the Firefox build that matches the pinned playwright, into a shared
+# path. postinstall already does `playwright install firefox`; this adds
+# --with-deps as a belt-and-braces for any missing library.
+RUN npx playwright install firefox --with-deps
 
-RUN mkdir -p /data /tmp/bp-downloads && chown -R node:node /data /tmp/bp-downloads /app
-USER node
+# Copy the app (server + public assets). Vanilla JS -- no build step.
+COPY server ./server
+COPY public ./public
+COPY scripts ./scripts
 
-EXPOSE 8080
+# Data (saved profiles + downloads) lives on the container filesystem. Mount a
+# volume/disk at /app/data on the platform to persist it across restarts; the app
+# works fine without one (profiles simply reset per boot).
+ENV DATA_DIR=/app/data
+RUN mkdir -p /app/data/sessions /app/data/downloads
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+EXPOSE 3000
 
-# tini reaps the zombie processes Chromium leaves behind.
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "server.js"]
+# Render and Railway both inject $PORT; the app binds 0.0.0.0:$PORT.
+CMD ["node", "server/index.js"]
