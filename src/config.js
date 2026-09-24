@@ -1,6 +1,7 @@
 // Central configuration. Everything comes from env vars so the same image
 // runs unchanged on Render, Railway, Docker, or a laptop.
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const asBool = (v, dflt = false) =>
@@ -61,31 +62,46 @@ export const config = {
   // another site's iframe, such as a hosted preview pane.
   frameAncestors: (process.env.CSP_FRAME_ANCESTORS ?? '').trim() || "'self'",
 
-  // Optional Servo sidecar ("fidelity mode"): a real engine for pages the
-  // proxy can't handle, served as prebuilt screenshots and reader-mode text.
-  // Lazy: nothing is spawned until the first request that needs it.
-  servo: {
-    // APP_ENGINE=proxy  -> proxy only, never starts the engine
-    // APP_ENGINE=hybrid -> proxy + fidelity mode (default)
-    enabled: mode !== 'proxy' && asBool(process.env.SERVO_ENABLED, true),
-    bin: (process.env.SERVO_BIN ?? '').trim() || path.join(process.cwd(), 'bin', 'servo-fetch'),
-    host: (process.env.SERVO_HOST ?? '').trim() || '127.0.0.1',
-    port: asInt(process.env.SERVO_PORT, 9233),
-    timeoutMs: asInt(process.env.SERVO_TIMEOUT_MS, 45_000),
-    startTimeoutMs: asInt(process.env.SERVO_START_TIMEOUT_MS, 30_000),
-    maxRestarts: asInt(process.env.SERVO_MAX_RESTARTS, 3),
-    viewport: (process.env.SERVO_VIEWPORT ?? '').trim() || '1280x800',
-    idleShutdownMs: asInt(process.env.SERVO_IDLE_SHUTDOWN_MS, 5 * 60_000),
-    // A heavy page peaks around 500 MB. Serialise renders so two at once
-    // can't OOM the container, and refuse to start the engine at all if the
-    // container is too small for it.
-    maxConcurrent: asInt(process.env.SERVO_MAX_CONCURRENT, 1),
-    minMemoryMb: asInt(process.env.SERVO_MIN_MEMORY_MB, 1100),
+  // Chromium engine: a real browser whose screen is streamed to the panel.
+  // Lazy — nothing is spawned until a tab actually asks for it — and it shuts
+  // itself down again when left idle, so an untouched deploy costs ~160 MB.
+  chromium: {
+    // APP_ENGINE=proxy  -> proxy only, never launch Chromium
+    // APP_ENGINE=chromium (default) -> Chromium is the primary engine
+    enabled: mode !== 'proxy' && asBool(process.env.CHROMIUM_ENABLED, true),
+    extraArgs: asList(process.env.CHROMIUM_ARGS),
+    // Measured on a real page: ~925 MB for the Chromium tree + ~150 MB for
+    // Node and the panel. Shut the engine down below this and explain why
+    // rather than letting the container OOM.
+    minMemoryMb: asInt(process.env.CHROMIUM_MIN_MEMORY_MB, 1800),
+    maxTabs: asInt(process.env.MAX_BROWSER_TABS, 3),
+    // Suspended after this long without being the active tab (frees ~120 MB).
+    tabSleepMs: asInt(process.env.TAB_SLEEP_MS, 15 * 60_000),
+    // Engine shuts down entirely after this long with no page open.
+    idleShutdownMs: asInt(process.env.BROWSER_IDLE_SHUTDOWN_MS, 10 * 60_000),
+    viewport: {
+      width: asInt(process.env.BROWSER_WIDTH, 1280),
+      height: asInt(process.env.BROWSER_HEIGHT, 800),
+    },
+    quality: asInt(process.env.BROWSER_JPEG_QUALITY, 62),
+    navTimeoutMs: asInt(process.env.BROWSER_NAV_TIMEOUT_MS, 45_000),
+    rendererHeapMb: asInt(process.env.BROWSER_HEAP_MB, 512),
+    // Skip a frame if the socket is backed up beyond this many bytes.
+    maxSocketBacklog: asInt(process.env.BROWSER_SOCKET_BACKLOG, 1_500_000),
   },
 
   engineMode: mode,
 
-  version: '1.3.0',
+  // Read from package.json so there is exactly one place to bump the version.
+  // This string drifted from the real version twice before it was derived.
+  version: (() => {
+    try {
+      const raw = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+      return JSON.parse(raw).version;
+    } catch {
+      return 'unknown';
+    }
+  })(),
 };
 
 // Hop-by-hop headers must never be forwarded (RFC 9110 7.6.1).

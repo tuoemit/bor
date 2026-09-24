@@ -3,6 +3,7 @@
 // the rendering happens in the user's own browser, which is what lets this run
 // inside 512 MB / 0.1 CPU free tiers on Render and Railway.
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './src/config.js';
 import { closeDb, initDb } from './src/db.js';
@@ -11,7 +12,10 @@ import { createOrphanHandler, createProxyRouter, errorPage } from './src/proxy/i
 import { createApiRouter } from './src/web/api.js';
 import { attachSession, createAuthRouter, requireAuth } from './src/web/auth.js';
 import { cookieMiddleware, platform } from './src/util/http.js';
-import { isAvailable as servoAvailable, stop as stopServo } from './src/servo/manager.js';
+import { attachChromiumSocket } from './src/chromium/ws.js';
+import { getDownload } from './src/chromium/session.js';
+import { status as chromiumStatus, stop as stopChromium } from './src/chromium/browser.js';
+import { verifySessionRequest } from './src/web/auth.js';
 
 const PUBLIC_DIR = path.join(process.cwd(), 'public');
 
@@ -82,8 +86,22 @@ export function createApp() {
     }),
   );
 
+  // Chromium downloads land in a temp dir; the panel links straight to this.
+  app.get('/download/:id', requireAuth, (req, res) => {
+    const hit = getDownload(String(req.params.id));
+    if (!hit) return res.status(404).json({ error: 'not_found', message: 'That download has expired.' });
+    res.set({
+      'content-type': 'application/octet-stream',
+      'content-length': String(hit.size),
+      'content-disposition': `attachment; filename="${hit.name.replace(/"/g, '')}"`,
+      'x-robots-tag': 'noindex',
+    });
+    return fs.createReadStream(hit.path).pipe(res);
+  });
+
   app.get('/', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-  app.get(['/panel.css', '/panel.js'], requireAuth, (req, res) => res.sendFile(path.join(PUBLIC_DIR, req.path.slice(1))));
+  const panelAssets = ['/panel.css', '/panel.js', '/chromium-view.js', '/chromium-view.css'];
+  app.get(panelAssets, requireAuth, (req, res) => res.sendFile(path.join(PUBLIC_DIR, req.path.slice(1))));
 
   // Relative-URL recovery for pages that escape the /p/ prefix.
   app.use(createOrphanHandler());
@@ -118,13 +136,17 @@ async function main() {
     log.info(`browser-panel v${config.version} — ${where.name}`);
     log.info(`listening on http://${config.host}:${config.port}`);
     log.info(`store: ${dbState}`);
-    log.info('engine: server-side proxy webview (no headless browser)');
-    const servo = servoAvailable();
-    log.info(
-      servo
-        ? 'fidelity: Servo sidecar available (lazy — starts on first fidelity render)'
-        : 'fidelity: Servo sidecar not available (proxy-only; see SERVO_BIN)',
-    );
+    const chr = chromiumStatus();
+    if (chr.available) {
+      log.info(
+        `engine: Chromium ready — lazy launch, ${chr.maxTabs} tabs max, ` +
+          `container limit ${chr.memoryLimitMb} MB (min ${config.chromium.minMemoryMb} MB)`,
+      );
+    } else if (config.chromium.enabled) {
+      log.warn(`engine: proxy only — Chromium unavailable: ${chr.hint ?? 'unknown reason'}`);
+    } else {
+      log.info('engine: proxy only (CHROMIUM_ENABLED=0)');
+    }
     if (config.ephemeralPassword) {
       log.warn('APP_PASSWORD was not set. Generated a one-time password:');
       log.warn(`  →  ${config.password}`);
@@ -133,17 +155,34 @@ async function main() {
     log.info('──────────────────────────────────────────────');
   });
 
-  server.keepAliveTimeout = 65_000;
-  server.headersTimeout = 70_000;
+  // Live browser transport. Auth happens inside, on the handshake cookies.
+  attachChromiumSocket(server, {
+    authenticate: async (req) => {
+      try {
+        req.cookies = (await import('./src/util/http.js')).parseCookies(req.headers.cookie);
+        return verifySessionRequest(req);
+      } catch {
+        return null;
+      }
+    },
+  });
+
+  // WebSockets are long-lived; the default timeouts would cut them off.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
 
   const shutdown = (signal) => {
     log.info(`${signal} received, shutting down`);
-    stopServo();
-    server.close(() => {
+    const finish = () => {
       closeDb();
       process.exit(0);
-    });
-    setTimeout(() => process.exit(0), 5000).unref();
+    };
+    // Saves the Chromium storage state (cookies + localStorage) before exit,
+    // which is what keeps logins alive across a redeploy.
+    stopChromium({ save: true })
+      .catch(() => {})
+      .finally(() => server.close(finish));
+    setTimeout(finish, 6000).unref();
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

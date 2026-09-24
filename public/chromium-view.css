@@ -1,0 +1,66 @@
+/* Live Chromium viewer: canvas + status chrome. */
+
+.liveview {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: #05070a;
+  overflow: hidden;
+  touch-action: none; /* we translate gestures into browser input ourselves */
+}
+.liveview[hidden] { display: none; }
+
+#chrCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  cursor: default;
+  background: #05070a;
+  transition: opacity 0.25s ease;
+}
+#chrCanvas:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(91, 140, 255, 0.5);
+}
+
+.livebadge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 12;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: #cfe0ff;
+  background: rgba(18, 25, 40, 0.85);
+  border: 1px solid rgba(91, 140, 255, 0.35);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.livebadge.ok { color: #b6f0d2; border-color: rgba(52, 211, 153, 0.4); }
+.livebadge.bad { color: #ffd0da; border-color: rgba(248, 113, 113, 0.45); }
+
+.livehint {
+  position: absolute;
+  inset: auto 12px 12px 12px;
+  z-index: 12;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #ffd9de;
+  background: rgba(42, 23, 32, 0.94);
+  border: 1px solid #4d2a3a;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+}
+.livehint[hidden] { display: none; }
+.livehint b { color: #ffe9a8; }
+
+/* Engine chip in the status bar reflects which engine the active tab uses. */
+#statusEngine2.chromium { color: #b6f0d2; }
+#statusEngine2.proxy { color: #cfd6e6; }
+
+@media (max-width: 620px) {
+  .livebadge { font-size: 10px; padding: 3px 8px; }
+}

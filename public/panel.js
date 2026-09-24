@@ -16,9 +16,8 @@ const els = {
   modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'), modalSub: $('modalSub'),
   toast: $('toast'), errorbar: $('errorbar'), errorMsg: $('errorMsg'),
   sidebar: $('sidebar'), menu: $('menu'),
-  fidelity: $('fidelity'), fidImg: $('fidImg'), fidScroll: $('fidScroll'),
-  fidMeta: $('fidMeta'), fidTitle: $('fidTitle'), fidelityItem: $('fidelityItem'),
-  readerItem: $('readerItem'), errorFidelity: $('errorFidelity'),
+  liveview: $('liveview'), liveBadge: $('liveBadge'), liveHint: $('liveHint'),
+  engineItem: $('engineItem'), mobileItem: $('mobileItem'), errorChromium: $('errorChromium'),
   findbar: $('findbar'), findInput: $('findInput'), findCount: $('findCount'),
 };
 
@@ -33,14 +32,20 @@ const state = {
   // scaled to fit, for sites that are unusable in a narrow viewport.
   viewMode: 'fit',
   narrow: false,
-  // Servo sidecar ("fidelity mode") availability, from /api/engine.
-  servo: { available: false, status: 'disabled', version: null, hint: null },
-  fidelity: { url: null, full: false, open: false, loadedAt: 0 },
+  // Live Chromium engine availability, from /api/engine.
+  engine: { available: false, status: 'disabled', version: null, hint: null, maxTabs: 3 },
+  engineDefault: 'proxy',
+  mobileView: false,
+  viewer: null,
   zoom: 1,
   find: { open: false, query: '', count: 0, index: -1 },
 };
 
 const NARROW = '(max-width: 900px)';
+
+// Zoom steps shared by the keyboard shortcuts and the menu — the same ladder
+// desktop browsers use. A slider feels nicer but a ladder is what Ctrl +/- does.
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 const DESKTOP_WIDTH = 1280;
 const isNarrow = () => window.matchMedia(NARROW).matches;
 
@@ -102,6 +107,7 @@ function createTab(url = null, { activate = true, title = null } = {}) {
     title: title ?? 'New tab',
     url: url ?? null,
     path: null,
+    mode: state.engineDefault,
     history: [],
     index: -1,
     loading: false,
@@ -120,6 +126,8 @@ function createTab(url = null, { activate = true, title = null } = {}) {
 function closeTab(id) {
   const idx = state.tabs.findIndex((t) => t.id === id);
   if (idx === -1) return;
+  const closing = state.tabs[idx];
+  if (closing?.mode === 'chromium' && state.viewer) state.viewer.close(id);
   state.tabs.splice(idx, 1);
   if (state.tabs.length === 0) {
     createTab();
@@ -153,11 +161,38 @@ function scrollActiveTabIntoView() {
   }
 }
 
-function showTab(tab) {
+function showTab(tab, { force = false } = {}) {
   if (!tab) return;
   updateChrome(tab);
+  updateEngineLabel();
+
+  const useChromium = tab.mode === 'chromium' && state.engine.available;
+
+  if (useChromium && (tab.url || tab.path)) {
+    const url = tab.url ?? tab.path;
+    els.frame.hidden = true;
+    els.frame.removeAttribute('src');
+    els.startpage.hidden = true;
+    els.liveview.hidden = false;
+
+    const viewer = ensureViewer();
+    if (!viewer) {
+      showLiveHint('The live viewer script did not load.');
+      return;
+    }
+    viewer.connect();
+    if (force || viewer.tabId !== tab.id) viewer.open(tab.id, url);
+    else viewer.focus(tab.id);
+    setLoading(true);
+    updateStatusBar();
+    return;
+  }
+
+  // Proxy mode (or an untouched new tab)
+  els.liveview.hidden = true;
+  if (state.viewer && tab.id) state.viewer.close(tab.id);
+
   if (tab.path) {
-    if (state.fidelity.open) closeFidelity();
     setTimeout(() => applyZoom(state.zoom, { persist: false }), 60);
     if (els.frame.getAttribute('src') !== tab.path) els.frame.setAttribute('src', tab.path);
     els.frame.hidden = false;
@@ -233,6 +268,31 @@ async function navigate(tab, input, { record = true } = {}) {
 
   setLoading(true);
   setNote(`resolving ${query.slice(0, 60)}…`);
+
+  // Chromium takes the raw address and does its own resolution; the proxy
+  // needs the server to normalise and sign a capability URL first.
+  if (tab.mode === 'chromium' && state.engine.available) {
+    const viewer = ensureViewer();
+    if (!viewer) return showError('The live viewer is unavailable.', () => navigate(tab, query));
+    tab.url = query;
+    tab.path = null;
+    if (record) {
+      tab.history = tab.history.slice(0, tab.index + 1);
+      if (tab.history[tab.history.length - 1] !== query) tab.history.push(query);
+      tab.index = tab.history.length - 1;
+    }
+    els.liveview.hidden = false;
+    els.startpage.hidden = true;
+    els.frame.hidden = true;
+    viewer.connect();
+    if (viewer.tabId === tab.id) viewer.command({ t: 'nav', url: query });
+    else viewer.open(tab.id, query);
+    renderTabs();
+    updateChrome(tab);
+    saveSession();
+    return;
+  }
+
   try {
     const { url, path } = await api('/api/navigate', { method: 'POST', body: { input: query } });
     loadPath(tab, path, url, { record, title: url });
@@ -265,15 +325,25 @@ function loadPath(tab, path, url, { record = true, title = null } = {}) {
 
 function goBack() {
   const tab = activeTab();
-  if (!tab || tab.index <= 0) return;
+  if (!tab) return;
+  if (tab.mode === 'chromium' && state.engine.available) {
+    // Chromium owns its own history in this mode.
+    state.viewer?.command({ t: 'back' });
+    return;
+  }
+  if (tab.index <= 0) return;
   tab.index -= 1;
-  const url = tab.history[tab.index];
-  mintAndLoad(tab, url, { record: false });
+  mintAndLoad(tab, tab.history[tab.index], { record: false });
 }
 
 function goForward() {
   const tab = activeTab();
-  if (!tab || tab.index >= tab.history.length - 1) return;
+  if (!tab) return;
+  if (tab.mode === 'chromium' && state.engine.available) {
+    state.viewer?.command({ t: 'forward' });
+    return;
+  }
+  if (tab.index >= tab.history.length - 1) return;
   tab.index += 1;
   mintAndLoad(tab, tab.history[tab.index], { record: false });
 }
@@ -291,6 +361,10 @@ function reload() {
   const tab = activeTab();
   if (!tab?.url) return;
   setLoading(true);
+  if (tab.mode === 'chromium' && state.engine.available) {
+    state.viewer?.command({ t: 'reload' });
+    return;
+  }
   mintAndLoad(tab, tab.url, { record: false });
 }
 
@@ -312,7 +386,11 @@ function setLoading(loading) {
   }
 }
 
-function setNote(text) { $('statusNote').textContent = text; }
+function setNote(text) {
+  const tab = activeTab();
+  if (tab?.mode === 'chromium' && state.engine.available && text === 'loaded') return;
+  $('statusNote').textContent = text;
+}
 
 function showError(message, retry) {
   els.errorMsg.textContent = message;
@@ -518,9 +596,9 @@ async function loadInfo() {
     ['Platform', `${info.platform.name}${info.platform.region ? ` (${info.platform.region})` : ''}`],
     ['Engine', info.engine],
     [
-      'Fidelity engine',
-      info.fidelityEngine?.available
-        ? `Servo v${info.fidelityEngine.version ?? '?'} (sidecar, ${info.fidelityEngine.status})`
+      'Chromium engine',
+      info.chromiumEngine?.available
+        ? `Chromium ${info.chromiumEngine.version ?? 'ready'} (${info.chromiumEngine.status})`
         : 'unavailable — proxy only',
     ],
     ['Version', `v${info.version} · node ${info.node}`],
@@ -783,12 +861,12 @@ els.menu.addEventListener('click', async (event) => {
   if (act === 'reload') return reload();
   if (act === 'bookmark') return toggleBookmark();
   if (act === 'viewmode') return setViewMode(state.viewMode === 'desktop' ? 'fit' : 'desktop');
-  if (act === 'fidelity') return showFidelity(fidelityUrl(tab), { force: true });
+  if (act === 'engine') return setTabEngine(tab, tab?.mode === 'chromium' ? 'proxy' : 'chromium');
+  if (act === 'mobile') return toggleMobileView();
   if (act === 'find') return openFind();
   if (act === 'zoom-in') return zoomStep(1);
   if (act === 'zoom-out') return zoomStep(-1);
   if (act === 'zoom-reset') return applyZoom(1);
-  if (act === 'reader') return openReader(fidelityUrl(tab));
   if (act === 'clearcookies') {
     await api('/api/cookies', { method: 'DELETE' });
     loadCookies();
@@ -918,205 +996,346 @@ if (window.visualViewport) {
   });
 }
 
-/* ------------------------------------------------ fidelity mode (Servo) */
-function refreshServoUi() {
-  const ok = state.servo.available;
-  const item = $('fidelityItem');
-  const reader = $('readerItem');
-  for (const el of [item, reader]) {
-    if (!el) continue;
-    el.disabled = !ok;
-    el.style.opacity = ok ? '' : '0.45';
-    el.title = ok ? '' : state.servo.hint || 'Servo sidecar unavailable';
+/* --------------------------------------------- live Chromium engine mode */
+function refreshEngineUi() {
+  const ok = state.engine.available;
+  $('statusEngine2').textContent = `engine: ${ok ? 'chromium' : 'proxy'}`;
+  $('statusEngine2').className = `pill ${ok ? 'chromium' : 'proxy'}`;
+  $('engineBtn').style.opacity = ok ? '' : '0.45';
+  $('engineBtn').title = ok
+    ? 'Switch engine for this tab (Chromium / proxy)'
+    : state.engine.hint || 'Chromium is not available on this instance';
+  els.errorChromium.hidden = !ok;
+  updateEngineLabel();
+}
+
+function updateEngineLabel() {
+  const tab = activeTab();
+  const mode = tab?.mode ?? 'proxy';
+  els.engineItem.textContent = mode;
+  $('engineBtn').textContent = mode === 'chromium' ? '◉' : '◎';
+  els.mobileItem.textContent = state.mobileView ? 'on' : 'off';
+  $('mobileBtn').textContent = state.mobileView ? '▮' : '▯';
+
+  // The header chip used to be static markup from the pre-Chromium build, so
+  // it kept claiming "no chromium" while a live Chromium tab was on screen.
+  const chip = $('engineChip');
+  if (chip) {
+    const live = mode === 'chromium';
+    chip.innerHTML = live
+      ? '<b>chromium</b> · live'
+      : '<b>proxy webview</b> · no chromium';
+    chip.title = live
+      ? 'This tab is a live Chromium session streamed over WebSocket'
+      : 'This tab is rendered by your own browser through the proxy';
+    chip.classList.toggle('live', live);
   }
-  $('errorFidelity').hidden = !ok;
+  const sub = $('startSub');
+  if (sub) {
+    sub.textContent = state.engine.available
+      ? 'Remote browser panel · live Chromium engine'
+      : 'Remote browser panel · proxy webview engine';
+  }
+}
+
+/** Create the viewer once, lazily — it opens a WebSocket. */
+function ensureViewer() {
+  if (state.viewer) return state.viewer;
+  const View = window.BP_VIEW?.ChromiumView;
+  if (!View) return null;
+  state.viewer = new View(els.liveview, {
+    onStatus: onViewerStatus,
+    onEvent: onViewerEvent,
+  });
+  return state.viewer;
+}
+
+function onViewerStatus(status) {
+  const badge = els.liveBadge;
+  switch (status.status) {
+    case 'connecting':
+      badge.textContent = 'connecting…';
+      badge.className = 'livebadge';
+      break;
+    case 'open':
+      badge.textContent = 'connected';
+      badge.className = 'livebadge ok';
+      break;
+    case 'ready': {
+      const s = status.engine;
+      badge.textContent = s?.version ? `chromium ${s.version.split('.')[0]} · live` : 'live';
+      badge.className = 'livebadge ok';
+      break;
+    }
+    case 'closed':
+      badge.textContent = 'reconnecting…';
+      badge.className = 'livebadge';
+      break;
+    case 'error':
+      badge.textContent = 'offline';
+      badge.className = 'livebadge bad';
+      showLiveHint(status.message || 'The live browser connection failed.');
+      break;
+    default:
+      break;
+  }
+  updateStatusBar();
+}
+
+function onViewerEvent(msg) {
+  const tab = msg.tabId ? state.tabs.find((t) => t.id === msg.tabId) : activeTab();
+
+  switch (msg.t) {
+    case 'nav': {
+      if (!tab || !msg.url || msg.url === 'about:blank') break;
+      if (tab.url !== msg.url) {
+        tab.url = msg.url;
+        tab.path = null; // no proxied path in Chromium mode
+        if (tab.history[tab.index] !== msg.url) {
+          tab.history = tab.history.slice(0, tab.index + 1);
+          tab.history.push(msg.url);
+          tab.index = tab.history.length - 1;
+        }
+      }
+      if (tab.id === state.activeId) updateChrome(tab);
+      renderTabs();
+      saveSession();
+      break;
+    }
+
+    case 'title':
+      if (tab && msg.title) {
+        tab.title = String(msg.title).slice(0, 140);
+        renderTabs();
+      }
+      break;
+
+    case 'loading':
+      setLoading(Boolean(msg.loading));
+      break;
+
+    case 'error':
+      showError(msg.message || 'The browser reported an error.', () => reload());
+      break;
+
+    case 'page-error':
+      setNote(`page script error: ${String(msg.message).slice(0, 50)}`);
+      break;
+
+    case 'download': {
+      const link = `/download/${msg.id}`;
+      showLiveHint(
+        `Download ready: <b>${escapeHtml(msg.name)}</b> — <a href="${link}">save it</a>`,
+        { sticky: true },
+      );
+      break;
+    }
+
+    case 'evicted':
+      toast(msg.message || 'Tab suspended to free memory.');
+      if (tab && tab.mode === 'chromium') {
+        tab.mode = 'proxy';
+        if (tab.id === state.activeId) showTab(tab, { force: true });
+      }
+      break;
+
+    case 'viewport':
+      state.mobileView = Boolean(msg.mobile);
+      updateEngineLabel();
+      break;
+
+    case 'find':
+      state.find.count = msg.count ?? 0;
+      state.find.index = msg.index ?? -1;
+      els.findCount.textContent = state.find.count ? `${state.find.index + 1}/${state.find.count}` : 'no matches';
+      break;
+
+    case 'panel-key':
+      if (msg.key === 'f') openFind();
+      if (msg.key === '0') applyZoom(1);
+      break;
+
+    default:
+      break;
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+function showLiveHint(html, { sticky = false } = {}) {
+  els.liveHint.innerHTML = html;
+  els.liveHint.hidden = false;
+  clearTimeout(showLiveHint._t);
+  if (!sticky) showLiveHint._t = setTimeout(() => { els.liveHint.hidden = true; }, 6000);
 }
 
 async function loadEngineInfo() {
   try {
-    state.servo = await api('/api/engine');
+    state.engine = await api('/api/engine');
   } catch {
-    state.servo = { available: false, status: 'unavailable', hint: 'Could not query the engine.' };
+    state.engine = { available: false, status: 'unavailable', hint: 'Could not query the engine.' };
   }
-  refreshServoUi();
+  state.engineDefault = state.engine.available ? 'chromium' : 'proxy';
+  refreshEngineUi();
 }
 
-function fidelityUrl(tab) {
-  return tab?.url ?? state.fidelity.url;
-}
+function setTabEngine(tab, mode) {
+  if (!tab) return;
+  const target = mode === 'chromium' && !state.engine.available ? 'proxy' : mode;
+  if (target === tab.mode) return;
 
-function showFidelity(url, { full, force = false } = {}) {
-  if (!url) return toast('Nothing to render.');
-  if (!state.servo.available) {
-    return toast(state.servo.hint || 'Servo sidecar is not available on this deployment.');
+  if (target === 'proxy' && state.viewer) {
+    state.viewer.close(tab.id);
   }
-
-  const changed = url !== state.fidelity.url || (full !== undefined && full !== state.fidelity.full);
-  state.fidelity.url = url;
-  if (full !== undefined) state.fidelity.full = full;
-  if (state.fidelity.open && !changed && !force) return;
-
-  const params = new URLSearchParams({ url });
-  if (state.fidelity.full) params.set('full', '1');
-  if (state.viewMode === 'desktop') params.set('viewport', '1280x1400');
-
-  els.fidelity.hidden = false;
-  els.fidScroll.hidden = false;
-  state.fidelity.open = true;
-  els.fidTitle.textContent = state.fidelity.full ? 'Servo render — full page' : 'Servo render';
-  els.fidMeta.textContent = `${hostOf(url)} · rendering…`;
-  els.fidFull.textContent = state.fidelity.full ? 'Viewport only' : 'Full page';
-
-  // Cache-bust on explicit refresh only, so the server-side render cache works.
-  const cacheBust = force ? `&t=${Date.now()}` : '';
-  els.fidImg.onload = () => {
-    els.fidMeta.textContent = `${hostOf(state.fidelity.url)} · ${els.fidImg.naturalWidth}×${els.fidImg.naturalHeight}`;
-    state.fidelity.loadedAt = Date.now();
-  };
-  els.fidImg.onerror = () => {
-    els.fidMeta.textContent = 'render failed';
-    showError('Servo could not render that page. It may need more memory than this instance has.', () => showFidelity(url, { force: true }));
-  };
-  els.fidImg.src = `/api/fidelity?${params.toString()}${cacheBust}`;
-}
-
-function closeFidelity() {
-  state.fidelity.open = false;
-  els.fidelity.hidden = true;
-  els.fidImg.removeAttribute('src');
-}
-
-function setFidelityFit(fit) {
-  els.fidScroll.classList.toggle('fit', fit);
-  els.fidScroll.classList.toggle('actual', !fit);
-  $('fidFit').textContent = fit ? 'Fit' : 'Fit';
-}
-
-async function openReader(url) {
-  if (!url) return toast('Nothing to read.');
-  if (!state.servo.available) {
-    return toast(state.servo.hint || 'Reader mode needs the Servo sidecar.');
-  }
-  showModal('Reader mode', `${hostOf(url)} · extracting…`, '');
-  try {
-    const data = await api('/api/reader', { method: 'POST', body: { url, format: 'markdown' } });
-    els.modalTitle.textContent = 'Reader mode';
-    els.modalSub.textContent = `${hostOf(data.url)} · ${(data.bytes / 1024).toFixed(1)} KB of text`;
-    els.modalBody.textContent = data.content || '(no readable content found)';
-  } catch (err) {
-    els.modalBody.textContent = `Could not extract text: ${err.message}`;
-  }
-}
-
-$('fidClose').addEventListener('click', () => {
-  closeFidelity();
+  tab.mode = target;
+  showTab(tab, { force: true });
   renderTabs();
-});
-$('fidFit').addEventListener('click', () => {
-  setFidelityFit(!els.fidScroll.classList.contains('fit'));
-});
-$('fidFull').addEventListener('click', () => showFidelity(state.fidelity.url, { full: !state.fidelity.full, force: true }));
-$('fidRefresh').addEventListener('click', () => showFidelity(state.fidelity.url, { force: true }));
-$('fidReader').addEventListener('click', () => openReader(state.fidelity.url));
-$('errorFidelity').addEventListener('click', () => {
-  const tab = activeTab();
-  if (tab?.url) showFidelity(tab.url);
-});
-setFidelityFit(true);
+  toast(target === 'chromium' ? 'Switched to the live Chromium engine' : 'Switched to the lightweight proxy engine');
+  saveSession();
+}
 
-/* ----------------------------------------------------------- find + zoom */
-function framePost(message) {
-  const win = els.frame.contentWindow;
+function toggleMobileView() {
+  state.mobileView = !state.mobileView;
+  if (activeTab()?.mode === 'chromium') {
+    state.viewer?.command({ t: 'viewport', width: 390, height: 844, mobile: state.mobileView });
+  }
+  updateEngineLabel();
+  toast(state.mobileView ? 'Mobile viewport on' : 'Desktop viewport');
+}
+
+/* ------------------------------------------------- zoom & find, both engines */
+
+// The proxy engine reports back whether the page could do native CSS zoom;
+// Chromium always can (it zooms the page itself, no transform involved).
+state.zoomNative = true;
+
+// Talk to the proxy iframe. Chromium tabs go over the WebSocket instead.
+function framePost(payload) {
+  const win = els.frame?.contentWindow;
   if (!win) return;
   try {
-    win.postMessage({ __bpCmd: 1, ...message }, '*');
+    win.postMessage({ __bpCmd: 1, ...payload }, '*');
   } catch {
-    /* frame went away mid-navigation */
+    /* iframe not loaded, or sandboxed away from us */
   }
 }
-
-function openFind() {
-  if (!activeTab()?.path) return toast('Open a page first.');
-  state.find.open = true;
-  els.findbar.hidden = false;
-  els.findInput.focus();
-  els.findInput.select();
-  if (state.find.query) framePost({ type: 'find', query: state.find.query });
-}
-
-function closeFind() {
-  state.find.open = false;
-  els.findbar.hidden = true;
-  framePost({ type: 'find', query: null }); // clears highlights
-  els.findCount.textContent = '0/0';
-  state.find.query = '';
-}
-
-function runFind(query) {
-  state.find.query = query;
-  if (!query) {
-    framePost({ type: 'find', query: null });
-    els.findCount.textContent = '0/0';
-    return;
-  }
-  framePost({ type: 'find', query });
-}
-
-function stepFind(delta) {
-  if (!state.find.query) return;
-  framePost({ type: 'find-step', dir: delta });
-}
-
-els.findInput.addEventListener('input', () => runFind(els.findInput.value));
-els.findInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    stepFind(event.shiftKey ? -1 : 1);
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    closeFind();
-  }
-});
-$('findNext').addEventListener('click', () => stepFind(1));
-$('findPrev').addEventListener('click', () => stepFind(-1));
-$('findClose').addEventListener('click', closeFind);
-
-/* Zoom. Preferred path is the page's own documentElement.style.zoom (true
-   reflow, crisp text). If the page rejects that we fall back to scaling the
-   iframe element itself. */
-const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
-const ZOOM_FALLBACK = true;
 
 function applyZoom(level, { persist = true } = {}) {
   state.zoom = Math.max(0.25, Math.min(3, Number(level) || 1));
-  framePost({ type: 'zoom', level: state.zoom });
+  const tab = activeTab();
 
-  // Native CSS zoom (Chromium, Firefox 126+, Safari) reflows text properly and
-  // is always preferred. The iframe-transform fallback is only used when the
-  // page reports it can't do native zoom -- and never in desktop-viewport mode,
-  // which already owns the frame's transform.
-  const useFallback = ZOOM_FALLBACK && !state.zoomNative && state.viewMode !== 'desktop';
-  els.frame.style.transformOrigin = '0 0';
-  els.frame.style.transform = useFallback ? `scale(${state.zoom})` : '';
-  els.frame.style.width = useFallback ? `${100 / state.zoom}%` : '';
-  els.frame.style.height = useFallback ? `${100 / state.zoom}%` : '';
+  if (tab?.mode === 'chromium') {
+    // Chromium reflows the page for real via Emulation.setPageScaleFactor, so
+    // text stays crisp and there is no iframe transform to fight with.
+    state.viewer?.command({ t: 'zoom', tabId: tab.id, level: state.zoom });
+  } else {
+    framePost({ type: 'zoom', level: state.zoom });
+    // Scale the iframe only if the page told us native CSS zoom failed, and
+    // never in desktop-viewport mode — that mode already owns the transform.
+    const useFallback = !state.zoomNative && state.viewMode !== 'desktop';
+    els.frame.style.transformOrigin = '0 0';
+    els.frame.style.transform = useFallback ? `scale(${state.zoom})` : '';
+    els.frame.style.width = useFallback ? `${100 / state.zoom}%` : '';
+    els.frame.style.height = useFallback ? `${100 / state.zoom}%` : '';
+  }
 
   const pct = Math.round(state.zoom * 100);
   $('zoomItem').textContent = `Reset zoom (${pct}%)`;
   const pill = $('statusZoom');
   if (pill) pill.textContent = `${pct}%`;
   if (persist) {
-    try { localStorage.setItem('bp.zoom', String(state.zoom)); } catch { /* ignore */ }
+    try { localStorage.setItem('bp.zoom', String(state.zoom)); } catch { /* private mode */ }
   }
 }
 
 function zoomStep(direction) {
   const i = ZOOM_STEPS.findIndex((v) => Math.abs(v - state.zoom) < 0.001);
   const next = i === -1
+    // Not on a rung (e.g. restored from storage): snap to the nearest one.
     ? ZOOM_STEPS.reduce((best, v) => (Math.abs(v - state.zoom) < Math.abs(best - state.zoom) ? v : best), 1)
     : ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + direction))];
   applyZoom(next);
 }
+
+function runFind(query, step) {
+  state.find.query = query ?? '';
+  const tab = activeTab();
+
+  if (!state.find.query) {
+    if (tab?.mode === 'chromium') state.viewer?.command({ t: 'find', tabId: tab.id, query: '' });
+    else framePost({ type: 'find', query: null });
+    els.findCount.textContent = '0/0';
+    return;
+  }
+
+  if (tab?.mode === 'chromium') {
+    state.viewer?.command({ t: 'find', tabId: tab.id, query: state.find.query, step: step ?? 0 });
+  } else {
+    framePost({ type: 'find', query: state.find.query });
+    if (step) framePost({ type: 'find-step', dir: step });
+  }
+}
+
+function openFind() {
+  if (!activeTab()) return toast('Open a page first.');
+  state.find.open = true;
+  els.findbar.hidden = false;
+  els.findInput.focus();
+  els.findInput.select();
+  if (state.find.query) runFind(state.find.query);
+}
+
+function closeFind() {
+  state.find.open = false;
+  els.findbar.hidden = true;
+  runFind('');            // clears highlights in whichever engine is active
+  els.findCount.textContent = '0/0';
+}
+
+function updateStatusBar() {
+  const stats = state.viewer?.stats;
+  if (!stats || activeTab()?.mode !== 'chromium') return;
+  $('statusNote').textContent = stats.connected
+    ? `live ${stats.fps}fps · ${stats.width}×${stats.height} · ${stats.frames} frames`
+    : 'live browser offline';
+}
+
+$('engineBtn').addEventListener('click', () => {
+  const tab = activeTab();
+  if (!tab) return;
+  setTabEngine(tab, tab.mode === 'chromium' ? 'proxy' : 'chromium');
+});
+$('mobileBtn').addEventListener('click', toggleMobileView);
+els.errorChromium.addEventListener('click', () => {
+  const tab = activeTab();
+  if (!tab) return;
+  setTabEngine(tab, 'chromium');
+  els.errorbar.hidden = true;
+});
+setInterval(updateStatusBar, 1000);
+
+/* ------------------------------------------------------------- find bar UI */
+let findDebounce = null;
+els.findInput.addEventListener('input', () => {
+  clearTimeout(findDebounce);
+  // Debounced: every keystroke re-highlights the page, which is expensive on
+  // a big document and pointless while someone is still typing.
+  findDebounce = setTimeout(() => runFind(els.findInput.value.trim()), 180);
+});
+els.findInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    runFind(els.findInput.value.trim(), event.shiftKey ? -1 : 1);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeFind();
+  }
+});
+$('findPrev').addEventListener('click', () => runFind(els.findInput.value.trim(), -1));
+$('findNext').addEventListener('click', () => runFind(els.findInput.value.trim(), 1));
+$('findClose').addEventListener('click', closeFind);
 
 /* -------------------------------------------------------------- shortcuts */
 window.addEventListener('keydown', (event) => {
@@ -1157,7 +1376,7 @@ function saveSession() {
     const payload = {
       activeId: state.activeId,
       tabs: state.tabs.map((tab) => ({
-        id: tab.id, title: tab.title, url: tab.url, path: tab.path,
+        id: tab.id, title: tab.title, url: tab.url, path: tab.path, mode: tab.mode,
         history: tab.history.slice(-40), index: Math.min(tab.index, 39),
       })),
     };
@@ -1178,6 +1397,7 @@ function restoreSession() {
       title: tab.title || 'New tab',
       url: tab.url ?? null,
       path: tab.path ?? null,
+      mode: tab.mode === 'chromium' ? 'chromium' : 'proxy',
       history: Array.isArray(tab.history) ? tab.history : [],
       index: Number.isInteger(tab.index) ? tab.index : (tab.history?.length ?? 1) - 1,
       loading: false,
@@ -1212,7 +1432,7 @@ async function boot() {
 
   syncLayout();
   applyViewMode();
-  loadEngineInfo();
+  await loadEngineInfo();
   loadHistory();
   loadTilesHint();
   if (!restoreSession()) createTab();

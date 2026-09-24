@@ -3,11 +3,31 @@
 A **password-protected browsing panel** that runs on **Render or Railway free tier** — the same
 repo deploys to both, unmodified.
 
-It is **not** a headless Chromium. There is no Puppeteer, no Playwright, no browser binary in the
-image. Instead the server fetches the pages you ask for and rewrites them so every URL points back
-through the proxy; the rendering happens in **your own browser**, inside a sandboxed `<iframe>` in
-the panel. That is what makes a full browsing session fit in **512 MB / 0.1 CPU**, when a headless
-Chrome alone would need ~500 MB and a build step that free tiers will time out on.
+It runs a **real Chromium** — the actual browser, driven over the Chrome DevTools Protocol — and
+streams its screen to your panel as a live, fully interactive session. Click, type, scroll, open
+tabs, download files: it is a browser, not a screenshot of one.
+
+There is also a second, much lighter engine built in: a **server-side proxy webview** that fetches
+and rewrites pages into an iframe rendered by your own browser. Fully-featured sites need Chromium;
+the proxy costs ~150 MB instead of ~1 GB and is what lets the panel still work on a small instance.
+Every tab picks its own engine.
+
+```
+┌─ your browser ────────────────────────────────────────────────┐
+│  panel chrome: tabs, address bar, history, bookmarks, find     │
+│  ┌─ live canvas (JPEG frames over WebSocket) ───────────────┐  │
+│  │  whatever Chromium is showing, ~30 fps while it changes  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└──────┬─────────────────────────────────────────────┬───────────┘
+       │ input events (normalised x/y, keys, wheel)  │ frames
+┌──────▼───────────────────── railway ───────────────▼───────────┐
+│  Node + Express        CDP  ┌───────────────────────────────┐  │
+│  auth · stats · sqlite  ◄──►│  Chromium (headless)          │  │
+│  permissions · input     ──►│  real engine, real JS, real   │  │
+│                             │  cookies, real downloads      │  │
+│                             └───────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ```
 ┌─ your browser ──────────────────────────────────────────────┐
@@ -28,7 +48,7 @@ Chrome alone would need ~500 MB and a build step that free tiers will time out o
 ## Deploy on Railway
 
 Railway is the recommended target: it gives you the volume and the memory that
-fidelity mode needs, and it builds the included `Dockerfile` with no config.
+the browser needs, and it builds the included `Dockerfile` with no config.
 
 ### 1. Deploy
 
@@ -44,22 +64,35 @@ railway domain                    # generate a public https://*.up.railway.app U
 Or from the dashboard: **New Project → Deploy from GitHub repo**. Railway detects
 `Dockerfile` + `railway.json`, and you add `APP_PASSWORD` under **Variables**.
 
-### 2. Give it memory (required for fidelity mode)
+### 2. Give it memory — this is the setting that matters
 
-Railway defaults a service to a low memory limit. The panel tells you when it's
-too small — the log prints the exact number it detected, and the menu shows the
-reason instead of silently failing.
+Chromium is a real browser and it costs real memory. Measured on this project
+with one live tab on a heavy page (Wikipedia):
 
-**Settings → Resources → Memory: 2 GB** (8192 CPU shares / 1 vCPU is plenty).
+| What | Measured |
+|---|---|
+| Node + panel, browser **not** launched | ~150 MB |
+| Chromium process tree, 1 tab | ~925 MB |
+| **Total, 1 tab live** | **~1.07 GB** |
+| After the engine shuts down | back to ~160 MB |
+
+**Settings → Resources → Memory: 2 GB** (and at least 1 vCPU — 8 GB is not
+needed; the engine idles low and peaks during page loads).
 
 | Service memory | What works |
 |---|---|
-| 512 MB | Proxy only. The panel auto-disables fidelity mode and says why. |
-| 1 GB | Proxy + occasional fidelity render (one at a time). Full-page renders may fail. |
-| **2 GB** | Everything, comfortably — the recommended setting. |
+| 512 MB | Proxy engine only. Chromium refuses to start and the panel says why. |
+| 1 GB | Chromium may start but will be killed under load. Not recommended. |
+| **2 GB** | The real thing — live Chromium, up to 3 tabs. **Recommended.** |
+| 4 GB | 3 tabs plus headroom; raise `MAX_BROWSER_TABS` if you want more. |
 
-Renders are **serialised** (`SERVO_MAX_CONCURRENT=1`) so two heavy pages can't
-collide, and the engine shuts down after 5 minutes idle to release ~450 MB.
+The app reads its cgroup limit at boot and **refuses to launch Chromium below
+`CHROMIUM_MIN_MEMORY_MB` (1800)** rather than getting OOM-killed mid-browse —
+the log and the About pane tell you the exact limit it detected.
+
+Left alone, the engine stops itself after 10 minutes with no tabs open
+(`BROWSER_IDLE_SHUTDOWN_MS`), returning the container to ~160 MB. Tabs you
+aren't looking at are suspended after 15 minutes (`TAB_SLEEP_MS`).
 
 ### 3. Add a volume (makes it a real browser, not a demo)
 
@@ -82,29 +115,40 @@ path when the volume is mounted, *in-memory* when it isn't.
 |---|---|---|
 | `APP_PASSWORD` | *required* | Panel password. Without it, a random one is printed to the logs each boot. |
 | `SESSION_SECRET` | any long random string | Keeps you logged in across password changes and redeploys. |
-| `APP_ENGINE` | `hybrid` (default) / `proxy` | `proxy` = never start the engine, useful if you drop back to a smaller plan. |
-| `SERVO_IDLE_SHUTDOWN_MS` | `300000` | Free ~450 MB after 5 min idle. `0` keeps it warm (faster, costs more). |
-| `SERVO_MAX_CONCURRENT` | `1` | Raise only on 4 GB+ services. |
+| `APP_ENGINE` | `chromium` (default) / `proxy` | `proxy` = never launch Chromium; the panel falls back to the proxy engine. |
+| `CHROMIUM_MIN_MEMORY_MB` | `1800` | Refuse to launch below this container limit. |
+| `MAX_BROWSER_TABS` | `3` | Live tabs. Each costs ~80–150 MB. |
+| `BROWSER_IDLE_SHUTDOWN_MS` | `600000` | Stop Chromium after 10 min with no tabs, freeing ~900 MB. |
+| `TAB_SLEEP_MS` | `900000` | Suspend a tab after 15 min off-screen. |
+| `BROWSER_JPEG_QUALITY` | `62` | Stream quality. Lower = less bandwidth to your phone. |
+| `BROWSER_WIDTH` / `BROWSER_HEIGHT` | `1280` / `800` | Virtual screen the page is laid out at. |
 | `CSP_FRAME_ANCESTORS` | leave as `self` | Only widen if you embed the panel in another site. |
 
 ### 5. What it costs
 
-Railway bills by usage (~$0.000231/GB-min RAM, ~$0.000463/vCPU-min). A 2 GB
-service at 1 vCPU running 24/7 lands around **$15–20/month**; with the sidecar
-idle-shutting-down, closer to **$12–15**. The proxy-only configuration on 1 GB is
-roughly half that. Idle boot uses ~73 MB, so most of the budget is headroom the
-browser engine uses only while you're actually rendering.
+Railway bills by usage (~$0.000231/GB-min RAM, ~$0.000463/vCPU-min), so what
+matters is *time spent with Chromium running*, not the container ceiling.
+
+* Browser running with a tab open: ~1.1 GB → roughly **$0.35–0.45/day** if you
+  browsed all day, plus a small CPU charge for page loads.
+* Idle at 160 MB (engine shut down): about **$0.05/day**.
+* A realistic pattern — a couple of hours of actual browsing a day — lands
+  around **$10–15/month**.
+
+Tune the two shutdown timers if you care: shorter means cheaper, at the cost of
+a ~1.2 s cold start on the next tab.
 
 ### 6. Sanity check after deploy
 
 ```bash
-railway logs                       # expect: "fidelity: Servo sidecar available"
+railway logs                       # expect: "engine: Chromium available"
 curl https://YOUR-APP.up.railway.app/healthz
 ```
 
-Then open the URL, log in, and check **⋯ → Servo render** — if the memory limit is
-too low you'll get a precise message telling you the current limit instead of a
-cryptic failure.
+Then open the URL, log in, and load any site — it should render live in
+Chromium. If the memory limit is too low, the toolbar shows a chip and the
+**⋯ → Switch engine** menu explains the detected limit rather than failing
+silently.
 
 ---
 
@@ -125,13 +169,17 @@ Everything is env vars, so the same image runs anywhere.
 | `ALLOW_PRIVATE_HOSTS` | `0` | **Leave off.** Enables the SSRF guard; off means `169.254.169.254`, `127.0.0.1` and the private network are unreachable through the panel. |
 | `BLOCKED_HOSTS` | – | Comma-separated hosts to refuse (e.g. your own admin host). |
 | `CSP_FRAME_ANCESTORS` | `'self'` | Widen to `*` if the *panel itself* is embedded in another site's iframe. |
-| `APP_ENGINE` | `hybrid` | `hybrid` = proxy + fidelity engine, `proxy` = proxy only. |
-| `SERVO_ENABLED` | `1` | Fidelity mode: use the Servo sidecar when its binary is present. |
-| `SERVO_MAX_CONCURRENT` | `1` | Simultaneous renders (raise only on 4 GB+). |
-| `SERVO_MIN_MEMORY_MB` | `1100` | Refuse to start the engine below this container limit. |
-| `SERVO_BIN` | `./bin/servo-fetch` | Path to the sidecar binary. |
-| `SERVO_PORT` | `9233` | Sidecar port (bound to 127.0.0.1 only). |
-| `SERVO_IDLE_SHUTDOWN_MS` | `300000` | Stop the sidecar after this long idle, freeing ~450 MB. `0` keeps it warm. |
+| `APP_ENGINE` | `chromium` | `chromium` = proxy + live browser, `proxy` = never launch Chromium. |
+| `CHROMIUM_ENABLED` | `1` | Master switch for the Chromium engine. |
+| `CHROMIUM_ARGS` | – | Extra flags appended to Chromium's command line. |
+| `CHROMIUM_MIN_MEMORY_MB` | `1800` | Refuse to launch below this container limit. |
+| `MAX_BROWSER_TABS` | `3` | Live tabs (each ~80–150 MB). |
+| `TAB_SLEEP_MS` | `900000` | Suspend an off-screen tab after this long. |
+| `BROWSER_IDLE_SHUTDOWN_MS` | `600000` | Stop Chromium after this long with no tabs, freeing ~900 MB. |
+| `BROWSER_JPEG_QUALITY` | `62` | Stream quality (bandwidth vs clarity). |
+| `BROWSER_WIDTH` / `BROWSER_HEIGHT` | `1280` / `800` | Virtual screen size. |
+| `BROWSER_HEAP_MB` | `512` | JS heap cap per renderer. |
+| `BROWSER_NAV_TIMEOUT_MS` | `45000` | Per-navigation timeout. |
 | `SEARCH_URL` | DuckDuckGo HTML | Search prefix used when the address bar gets a non-URL. |
 | `LOG_LEVEL` | `info` | `error`\|`warn`\|`info`\|`debug`. |
 
@@ -153,8 +201,12 @@ Without a volume the app detects the unwritable path and quietly runs in-memory
 * **Tabs** (Ctrl+T / Ctrl+W / Ctrl+1…9), back/forward, reload, home.
 * **Find in page** (Ctrl+F) — highlights and steps through matches inside the
   proxied frame, across the sandbox boundary.
-* **Zoom** (Ctrl +/-/0) — true reflow zoom via the page's own `zoom`, with an
-  iframe-transform fallback for engines that lack it. Persists per browser.
+* **Zoom** (Ctrl +/-/0) — Chromium zooms the page itself (`setPageScaleFactor`);
+  the proxy engine uses CSS zoom with a transform fallback. Persists per browser.
+* **Mobile viewport** (⋯ menu) — emulate a 390×844 phone with a mobile UA and
+  touch, so sites serve their real mobile layout.
+* **Downloads** — files Chromium downloads land in the panel as a link, so you
+  can pull them off the server.
 * **Address bar** with live suggestions from your bookmarks, top sites and history, plus
   search fallback when what you typed isn't a URL.
 * **History / Bookmarks / Top sites** stored server-side in SQLite, so they follow you
@@ -202,53 +254,49 @@ your browser with the server doing ~50 MB of work instead of ~500 MB.
 
 ---
 
-## Fidelity mode — a real engine, on demand
+## The Chromium engine
 
-The proxy renders with *your* browser, which is why it fits a free tier — but a handful of
-sites defeat URL rewriting. For those, the panel can hand the page to **Servo**, a real Rust
-browser engine (MPL-2.0), running as a sidecar process:
+Chromium is the **primary engine**: new tabs open in it by default. An injected
+page-side helper plus the CDP session give you a genuinely normal browsing
+experience rather than a remote-control toy.
 
-```bash
-npm run servo:install     # downloads the prebuilt binary (~89 MB unpacked)
-npm start                 # the panel detects it and enables fidelity mode
-```
+**What works, verified end to end against live sites:**
 
-In the panel you get three things: **Servo render** (a PNG of the real rendered page, viewport
-or full-page), **Reader mode** (Readability-extracted markdown, falling back to full page text),
-and a **Try Servo render** button that appears in the error bar whenever the proxy fails on a
-page — which is exactly when you want it.
-
-It is **lazy**: nothing is spawned until you ask for a render, and the engine is stopped again
-after `SERVO_IDLE_SHUTDOWN_MS` of silence, releasing its memory.
-
-### What it really costs — measured, not estimated
-
-| Scenario | Time | Peak RSS |
+| Capability | How | Verified |
 |---|---|---|
-| Sidecar idle, engine loaded | — | **221 MB** |
-| Render `example.com` (viewport) | 3 s cold / 0.3 s warm | 229 MB |
-| Render a Wikipedia article | ~4 s | **400–494 MB** |
-| Full-page render (1280×16384, 6 MB PNG) | ~7.5 s | ~500 MB |
-| Reader mode (extract text only) | 0.1–4 s | (no PNG) |
-| Second request for the same page | **4.5 ms** (server-side render cache) | — |
+| Live view | CDP `Page.startScreencast` → JPEG frames → canvas | ~30 fps while the page changes, 1 frame when idle |
+| Click / double-click / right-click | pointer events → `Input.dispatchMouseEvent` | ✅ focused an input and fired a button's JS handler |
+| Typing, shortcuts, Enter/Tab/arrows | key events → `Input.dispatchKeyEvent` | ✅ typed into Wikipedia's search and submitted it |
+| Scrolling | wheel events (+ touch drag → wheel) | ✅ `scrollY` tracked exactly |
+| Tabs | one Chromium page per panel tab | ✅ switching re-points the stream |
+| Cookies / logins | one persistent context, saved to SQLite | survives redeploys with a volume |
+| Downloads | `Page.downloadWillBegin` → `/download/:id` | 20 most recent kept for 24 h |
+| Find in page | injected script, 500-match cap | ✅ 137 matches on a Wikipedia article |
+| Zoom | `Emulation.setPageScaleFactor` | ✅ |
+| Mobile viewport | `setDeviceMetricsOverride` + mobile UA + touch | ✅ Wikipedia served its *mobile* skin |
+| Desktop viewport | screen size override | ✅ 1280×800 layout |
 
-Node + panel is ~73 MB. So fidelity mode takes a container from ~73 MB to ~570 MB at peak —
-**over the free tier's 512 MB ceiling.** Run it on the paid 1–2 GB tier, or leave
-`SERVO_ENABLED=0` and keep the proxy.
+**How input travels.** Your clicks carry the coordinate you actually clicked
+relative to the image, normalised to 0..1 on the client. The server multiplies
+by the emulated viewport size and dispatches real CDP input at that point. That
+indirection is why the panel can letterbox, fit or scale the canvas freely and
+still click in exactly the right place.
 
-A few implementation notes worth knowing:
+**Frames are dropped, not queued.** Each frame is ACKed (`Page.screencastFrameAck`)
+and if the socket has more than ~1.5 MB backed up the next frame is skipped. A
+slow phone connection degrades to fewer frames per second instead of drifting
+further and further behind the browser.
 
-* The API takes **camelCase** (`fullPage`, not `full_page`) — the lowercase form is silently ignored.
-* `/v1/fetch` always returns one `content` string whose meaning depends on `format`; the
-  `json` format returns a JSON *string* that must be parsed twice.
-* Readability returns just a nav stub on some sites (Wikipedia among them), so reader mode falls
-  back to `document.body.innerText` and reports which strategy it used.
-* Rendered URLs pass through the **same SSRF gate** as the proxy — the sidecar can never be used
-  to reach the metadata service or the private network (verified: both return 403).
-* The binary is **glibc-linked**, so the image moved from Alpine to Debian slim, and it requires
-  real fonts (`fonts-dejavu-core`) or every screenshot renders text as empty boxes.
+### The proxy engine, and why it still ships
 
----
+Chromium costs ~1 GB. The proxy engine costs ~150 MB and renders using *your*
+browser through a sandboxed iframe. It's not a legacy leftover: it's what makes
+the panel usable when you're on a smaller instance, it's instant (no stream
+latency), and for text-heavy sites it's arguably nicer — real text selection,
+crisp at any zoom, works offline from the server's point of view.
+
+Use the **◉ button** in the toolbar, or **⋯ → Switch engine**, to move a tab
+between engines. The status bar shows which one the active tab is using.
 
 ## Phone & touch support
 
@@ -290,9 +338,15 @@ menu or button equivalent for touch.
 
 These are inherent to "no Chromium + datacenter IP", not bugs to fix later:
 
-* **Some sites will block you.** Google, YouTube, Cloudflare bot walls, banking and most
-  anti-fraud systems identify a datacenter IP. You'll get a CAPTCHA or an error page. Search
-  defaults to DuckDuckGo's HTML endpoint because it is the most tolerant of the big engines.
+* **Datacenter IP blocking still applies.** Chromium fixes *rendering* and *compatibility*,
+  not geography. Google, YouTube, Cloudflare bot walls and banking sites see a Railway IP and
+  will CAPTCHA or block you, exactly as any other server would. (They render perfectly — you
+  just get served the challenge.) Put a residential proxy in front if this matters.
+* **Streaming costs bandwidth.** A busy page at ~30 fps and quality 62 is roughly 1–3 MB/s.
+  Not a problem on wifi; noticeable on mobile data. Drop `BROWSER_JPEG_QUALITY` or raise the
+  socket backlog threshold to trade smoothness for data.
+* **Video playback won't feel right.** Frames are JPEG at up to 30 fps; audio is muted
+  (`--mute-audio`) because it can't be streamed through this path at all.
 * **Aggressive SPAs may break.** Apps that hardcode absolute API URLs, use module workers,
   service workers, `import()` with literal URLs, or require `document.cookie` before first paint
   can misbehave. The bootstrap covers the common cases; it can't cover all of them.
@@ -313,12 +367,15 @@ APP_PASSWORD=dev DB_PATH=./data/browser.db npm start
 # → http://localhost:8080
 ```
 
-Add the fidelity engine (optional):
+For the Chromium engine locally, install the browser once (it's not bundled
+with `playwright-core`):
 
 ```bash
-npm run servo:install      # prebuilt Servo binary, no Rust toolchain needed
-npm start                  # panel detects it and enables fidelity mode
+npx playwright-core install --with-deps chromium   # needs sudo for the deps
+npm start
 ```
+
+Without it the panel still runs — every tab just uses the proxy engine.
 
 `npm run dev` uses `node --watch` for restarts. There are no native modules to build — SQLite
 is `sql.js` (WASM) — so installs are fast and cold starts are short.
@@ -346,9 +403,12 @@ is `sql.js` (WASM) — so installs are fast and cold starts are short.
 | Infinite/blank loading | Likely a heavy SPA exceeding `MAX_INFLIGHT_PER_SESSION`; raise it, or check the logs for `429`. |
 | Logs say "generated a one-time password" | `APP_PASSWORD` isn't set. Set it, or copy the password from the logs (sessions reset on restart). |
 | History/cookies empty after a redeploy | No volume mounted. On Railway: Settings → Volumes → mount at `/data`. |
-| "This container is limited to N MB…" | Railway memory limit is below `SERVO_MIN_MEMORY_MB`. Raise it in Settings → Resources, or set `APP_ENGINE=proxy`. |
-| Fidelity render times out | First render after idle includes a ~2 s engine cold start; a heavy page can take 30 s on a shared vCPU. Raise `SERVO_TIMEOUT_MS`. |
-| Renders queue up | By design: `SERVO_MAX_CONCURRENT=1` keeps peak memory predictable. Raise it only on a 4 GB+ service. |
+| "This container is limited to N MB…" | Below `CHROMIUM_MIN_MEMORY_MB`. Raise memory in Settings → Resources, or set `APP_ENGINE=proxy` for proxy-only. |
+| First tab takes ~2 s to appear | Chromium cold start. Keep `BROWSER_IDLE_SHUTDOWN_MS=0` to leave it warm (costs memory while idle). |
+| Live view is choppy | Bandwidth or CPU. Lower `BROWSER_JPEG_QUALITY`, drop `BROWSER_WIDTH/HEIGHT`, or check the fps in the status bar. |
+| Screen frozen but tabs work | The screencast stalled; switching tabs restarts it. Check `railway logs` for a renderer crash. |
+| Tabs get suspended | `MAX_BROWSER_TABS` (3) evicts the least recently used tab and the panel tells you which. |
+| Downloads disappear | Only the 20 most recent are kept, and `/tmp` is cleared on redeploy. |
 
 ---
 
@@ -365,6 +425,10 @@ browser-panel/
 │   ├── db.js               # sql.js (WASM SQLite) with debounced atomic writes
 │   ├── store.js            # history / bookmarks / cookie-jar data access
 │   ├── log.js              # leveled logger with secret redaction
+│   ├── chromium/
+│   │   ├── browser.js      # launch/lifecycle, memory guard, storage persistence
+│   │   ├── session.js      # per-tab page, screencast, input, downloads, tabs
+│   │   └── ws.js           # /ws/viewer socket: frames out, input in
 │   ├── proxy/
 │   │   ├── index.js        # /p/* router, inflight limits, error pages
 │   │   ├── upstream.js     # manual-redirect fetch, cookie jar injection

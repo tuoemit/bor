@@ -697,8 +697,10 @@ a:hover { text-decoration: underline; }
 }
 
 
-/* ------------------------------------------------------- fidelity (Servo) */
-.fidelity {
+/* ------------------------------------------- legacy block (kept for safety) */
+/* The embedded-engine container was replaced by #liveview (public/chromium-view.css);
+   this selector is retained because a stale cached panel.html may still reference it. */
+.legacy-engine-slot {
   position: absolute;
   inset: 0;
   z-index: 25;
@@ -706,7 +708,7 @@ a:hover { text-decoration: underline; }
   flex-direction: column;
   background: #0a0c11;
 }
-.fidelity[hidden] { display: none; }
+.legacy-engine-slot[hidden] { display: none; }
 
 .fbar {
   display: flex;

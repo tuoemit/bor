@@ -1,67 +1,58 @@
-# Works as-is on both Render and Railway.
+# Chromium engine build for Render / Railway.
 #
-# Two reasons this image is Debian-based rather than Alpine:
-#   1. the Servo sidecar binary is glibc-linked (no musl build exists),
-#   2. it links libfontconfig/libfreetype and needs real fonts installed,
-#      otherwise every fidelity screenshot renders text as empty boxes.
+# Debian, not Alpine: Playwright's Chromium is glibc-linked, and the engine's
+# system libraries (nss, atk, cups, gbm...) come from Playwright itself.
+#
+# Image size is the cost of a real browser: ~800 MB of Chromium plus its
+# dependencies. Railway's builder handles it; it is not a free-tier-friendly
+# deploy (see README for the memory profile).
 
-# ---------- stage 1: fetch the Servo sidecar binary ----------
-FROM debian:bookworm-slim AS servo-bin
-ARG SERVO_FETCH_VERSION=0.15.1
-ARG TARGETARCH
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-# Buildx gives us TARGETARCH; map it to the release's target triple.
-RUN set -eux; \
-    case "${TARGETARCH:-amd64}" in \
-      amd64) TRIPLE=x86_64-unknown-linux-gnu ;; \
-      arm64) TRIPLE=aarch64-unknown-linux-gnu ;; \
-      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/sf.tar.gz \
-      "https://github.com/konippi/servo-fetch/releases/download/v${SERVO_FETCH_VERSION}/servo-fetch-v${SERVO_FETCH_VERSION}-${TRIPLE}.tar.gz"; \
-    mkdir -p /out; \
-    tar xzf /tmp/sf.tar.gz -C /out --strip-components=1; \
-    chmod +x /out/servo-fetch; \
-    /out/servo-fetch --version || true
+# ---------- stage 1: browser + system deps ----------
+FROM node:22-bookworm-slim AS browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev || npm install --omit=dev
+# Installs Chromium *and* apt-installs every shared library it needs.
+RUN npx playwright-core install --with-deps chromium  && rm -rf /var/lib/apt/lists/*
 
 # ---------- stage 2: runtime ----------
 FROM node:22-bookworm-slim
-
 ENV NODE_ENV=production \
     PORT=8080 \
     DB_PATH=/data/browser.db \
-    SERVO_BIN=/app/bin/servo-fetch
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    # Node's heap: anything in this container that isn't the browser.
+    NODE_OPTIONS=--max-old-space-size=384
 
 WORKDIR /app
 
-# Runtime deps for the sidecar: fonts are NOT optional (see header comment).
-# curl is kept for the healthcheck and for debugging in a shell.
+# Runtime libraries Chromium needs. Kept explicit rather than relying on the
+# build stage having them, because this stage starts from a clean base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      curl ca-certificates \
-      libfontconfig1 libfreetype6 libstdc++6 libpng16-16 \
-      libbrotli1 libbz2-1.0 libexpat1 zlib1g \
-      fontconfig fonts-dejavu-core \
+      libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+      libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libcairo-gobject2 \
+      libx11-6 libxcb1 libxext6 libxi6 libxtst6 libglib2.0-0 \
+      fonts-dejavu-core fontconfig ca-certificates curl tini \
  && fc-cache -f \
  && rm -rf /var/lib/apt/lists/*
 
-# Dependencies first so the layer caches across code edits.
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev || npm install --omit=dev
 
 COPY . .
-COPY --from=servo-bin /out/servo-fetch /app/bin/servo-fetch
+COPY --from=browsers /ms-playwright /ms-playwright
 
-RUN mkdir -p /data && chown -R node:node /data /app
+RUN mkdir -p /data /tmp/bp-downloads && chown -R node:node /data /tmp/bp-downloads /app
 USER node
 
 EXPOSE 8080
 
-# Uses node itself so no extra tooling is needed in the image.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+# tini reaps the zombie processes Chromium leaves behind.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]

@@ -6,3 +6,8 @@ bin
 *.md
 !README.md
 .DS_Store
+/ms-playwright
+/tmp
+*.log
+*.zip
+data/

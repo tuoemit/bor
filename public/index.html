@@ -6,6 +6,7 @@
 <meta name="robots" content="noindex, nofollow">
 <title>browser-panel</title>
 <link rel="stylesheet" href="/panel.css">
+<link rel="stylesheet" href="/chromium-view.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%235b8cff' stroke-width='3'/><circle cx='16' cy='16' r='5' fill='%235b8cff'/></svg>">
 </head>
 <body>
@@ -33,7 +34,9 @@
     </form>
 
     <button class="icon-btn" id="starBtn" title="Bookmark this page">☆</button>
+    <button class="icon-btn" id="engineBtn" title="Switch engine (Chromium / proxy)">◉</button>
     <button class="icon-btn touch-only" id="viewBtn" title="Toggle desktop viewport">▭</button>
+    <button class="icon-btn touch-only" id="mobileBtn" title="Toggle mobile viewport">▯</button>
     <button class="icon-btn" id="sidebarBtn" title="Toggle sidebar (Ctrl+B)">▤</button>
     <button class="icon-btn" id="menuBtn" title="Menu">⋯</button>
   </div>
@@ -107,7 +110,7 @@
 
       <div class="errorbar" id="errorbar" hidden>
         <span class="msg" id="errorMsg"></span>
-        <button class="btn ghost" id="errorFidelity" hidden title="Render this page with the Servo engine instead">Try Servo render</button>
+        <button class="btn ghost" id="errorChromium" hidden title="Reopen this page in the live Chromium engine">Open in Chromium</button>
         <button class="btn ghost" id="errorRetry">Retry</button>
         <button class="btn ghost" id="errorDismiss">Dismiss</button>
       </div>
@@ -120,20 +123,10 @@
         <button class="icon-btn" id="findClose" title="Close (Esc)">✕</button>
       </div>
 
-      <div class="fidelity" id="fidelity" hidden>
-        <div class="fbar">
-          <span class="ftitle" id="fidTitle">Servo render</span>
-          <span class="fmeta" id="fidMeta"></span>
-          <span class="grow"></span>
-          <button class="btn ghost" id="fidFit" title="Fit to width">Fit</button>
-          <button class="btn ghost" id="fidFull" title="Capture the whole scrollable page">Full page</button>
-          <button class="btn ghost" id="fidRefresh" title="Render again">Refresh</button>
-          <button class="btn ghost" id="fidReader" title="Extract readable text instead">Reader</button>
-          <button class="icon-btn" id="fidClose" title="Back to live view">✕</button>
-        </div>
-        <div class="fscroll" id="fidScroll">
-          <img id="fidImg" alt="Rendered page">
-        </div>
+      <div class="liveview" id="liveview" hidden>
+        <canvas id="chrCanvas"></canvas>
+        <div class="livebadge" id="liveBadge">connecting…</div>
+        <div class="livehint" id="liveHint" hidden></div>
       </div>
 
       <iframe
@@ -150,6 +143,7 @@
     <span class="pill" id="statusPlatform">platform: …</span>
     <span class="pill" id="statusStore">store: …</span>
     <span class="pill" id="statusZoom">100%</span>
+    <span class="pill" id="statusEngine2">engine: …</span>
     <span class="grow"></span>
     <span id="statusNote">ready</span>
     <span class="sep">·</span>
@@ -162,13 +156,13 @@
   <button data-act="home">Home / new tab page</button>
   <button data-act="bookmark">Bookmark this page <small>☆</small></button>
   <button data-act="viewmode" id="viewModeItem">Desktop viewport: off</button>
+  <button data-act="engine">Switch engine <small id="engineItem">chromium</small></button>
+  <button data-act="mobile">Mobile viewport <small id="mobileItem">off</small></button>
   <button data-act="find">Find in page <small>Ctrl+F</small></button>
   <button data-act="zoom-in">Zoom in <small>Ctrl +</small></button>
   <button data-act="zoom-out">Zoom out <small>Ctrl −</small></button>
   <button data-act="zoom-reset" id="zoomItem">Reset zoom (100%)</button>
   <hr>
-  <button data-act="fidelity" id="fidelityItem">Servo render (real engine)</button>
-  <button data-act="reader" id="readerItem">Reader mode (text only)</button>
   <hr>
   <button data-act="source">View upstream source</button>
   <button data-act="copy">Copy upstream URL</button>
@@ -196,6 +190,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="/chromium-view.js"></script>
 <script src="/panel.js"></script>
 </body>
 </html>

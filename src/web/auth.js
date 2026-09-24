@@ -63,12 +63,20 @@ export function clearSessionCookie(req, res) {
   res.append('Set-Cookie', cookieParts(req, '', 0).join('; '));
 }
 
-/** Reads (and validates) the session cookie onto req.session. */
-export function attachSession(req, _res, next) {
+/**
+ * Verify a session straight from a request's cookies. Used by the HTTP
+ * middleware and by the WebSocket handshake, which is an ordinary HTTP
+ * request and therefore carries the same signed cookie.
+ */
+export function verifySessionRequest(req) {
   const token = readCookie(req, COOKIE_NAME);
   const payload = token ? verify(token) : null;
-  // sid is the short handle embedded in every proxied URL capability.
-  req.session = payload ? { ...payload, token, sid: sessionIdFromToken(token) } : null;
+  return payload ? { ...payload, token, sid: sessionIdFromToken(token) } : null;
+}
+
+/** Reads (and validates) the session cookie onto req.session. */
+export function attachSession(req, _res, next) {
+  req.session = verifySessionRequest(req);
   next();
 }
 
