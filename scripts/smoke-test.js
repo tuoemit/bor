@@ -160,6 +160,23 @@ const PANEL = { 'X-Requested-With': 'panel' };
   r = await request('POST', '/api/click', { body: { x: 10, y: 10, tabId }, headers: PANEL });
   check('POST /api/click (coordinates)', r.status === 200, `${r.status}`);
 
+  // Deterministic engine-side typing: focus a field via click, then type/backspace.
+  r = await request('POST', '/api/navigate', { body: { url: 'https://the-internet.herokuapp.com/login', tabId }, headers: PANEL });
+  check('re-navigate to form for typing check', r.status === 200, `${r.status}`);
+
+  r = await request('POST', '/api/click', { body: { selector: '#username', tabId }, headers: PANEL });
+  check('POST /api/click (selector focus)', r.status === 200, `${r.status}`);
+
+  r = await request('POST', '/api/type', { body: { text: 'tomsmith', tabId }, headers: PANEL });
+  check('POST /api/type ok', r.status === 200 && r.body.ok === true, JSON.stringify(r.body));
+
+  r = await request('POST', '/api/eval', { body: { expression: "document.querySelector('#username').value", tabId }, headers: PANEL });
+  check('typed text landed in the field', r.body && r.body.value === 'tomsmith', JSON.stringify(r.body && r.body.value));
+
+  r = await request('POST', '/api/press', { body: { key: 'Backspace', tabId }, headers: PANEL });
+  r = await request('POST', '/api/eval', { body: { expression: "document.querySelector('#username').value", tabId }, headers: PANEL });
+  check('Backspace edits the field', r.body && r.body.value === 'tomsmit', JSON.stringify(r.body && r.body.value));
+
   /* --------------------------- automation -------------------------- */
   process.stdout.write('\nautomation\n');
 

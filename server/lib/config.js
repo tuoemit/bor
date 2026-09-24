@@ -73,15 +73,16 @@ const config = {
   maxTabs: intEnv('MAX_TABS', 4),
   tabIdleTimeoutMs: intEnv('TAB_IDLE_TIMEOUT_MS', 20 * 60 * 1000),
 
-  // Viewport
-  viewportWidth: intEnv('VIEWPORT_WIDTH', 1280),
-  viewportHeight: intEnv('VIEWPORT_HEIGHT', 800),
+  // Viewport — phone-sized by default so pages render in a mobile layout and
+  // screenshots stay small/fast. Desktop clients can switch via the 📱/🖥 toggle.
+  viewportWidth: intEnv('VIEWPORT_WIDTH', 412),
+  viewportHeight: intEnv('VIEWPORT_HEIGHT', 840),
   deviceScaleFactor: intEnv('DEVICE_SCALE_FACTOR', 1),
   zoom: Number.parseFloat(process.env.ZOOM || '1') || 1,
 
   // Screencast
-  frameQuality: intEnv('FRAME_QUALITY', 62),
-  frameIntervalMs: intEnv('FRAME_INTERVAL_MS', 180),
+  frameQuality: intEnv('FRAME_QUALITY', 58),
+  frameIntervalMs: intEnv('FRAME_INTERVAL_MS', 250),
   maxFrameWidth: intEnv('MAX_FRAME_WIDTH', 1280),
 
   // Automation

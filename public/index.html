@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0f17" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Cloud Browser</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%234f7cff'/%3E%3Ccircle cx='50' cy='50' r='20' fill='%230b0f17'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/styles.css" />
@@ -11,19 +15,19 @@
     <header class="topbar">
       <div class="brand">
         <span class="dot" id="connDot"></span>
-        <strong>Cloud Browser</strong>
+        <strong class="brand-name">Cloud Browser</strong>
         <span class="engine-pill" id="enginePill">gecko</span>
       </div>
 
       <div class="topbar-right">
-        <label class="select-label">
+        <label class="select-label desktop-only">
           Session
           <select id="sessionSelect"></select>
         </label>
-        <button class="btn ghost" id="newSessionBtn" title="New isolated profile">+ Profile</button>
-        <button class="btn ghost" id="saveSessionBtn" title="Persist cookies + localStorage of this profile">Save</button>
-        <span class="divider"></span>
-        <button class="btn ghost" id="sideToggle" title="Toggle side panel">⋯ Panel</button>
+        <button class="btn ghost desktop-only js-new-session" title="New isolated profile">+ Profile</button>
+        <button class="btn ghost desktop-only js-save-session" title="Persist cookies + localStorage of this profile">Save</button>
+        <span class="divider desktop-only"></span>
+        <button class="btn ghost" id="sideToggle" title="Menu / side panel">⋯</button>
         <button class="btn ghost danger" id="logoutBtn">Log out</button>
       </div>
     </header>
@@ -31,20 +35,22 @@
     <nav class="toolbar">
       <button class="icon-btn" id="backBtn" title="Back">‹</button>
       <button class="icon-btn" id="fwdBtn" title="Forward">›</button>
-      <button class="icon-btn" id="reloadBtn" title="Reload">⟳</button>
-      <button class="icon-btn" id="homeBtn" title="Home">⌂</button>
 
       <form id="urlForm" class="urlform">
         <span class="lock" id="lockIcon" title="Connection">–</span>
-        <input id="urlInput" type="text" spellcheck="false" autocomplete="off"
-               placeholder="Enter an address or search terms  (e.g. wikipedia.org)" />
+        <input id="urlInput" type="text" spellcheck="false" autocomplete="off" enterkeyhint="go"
+               placeholder="Address or search…" />
         <button type="submit" class="icon-btn go" title="Go">↵</button>
       </form>
 
-      <button class="icon-btn" id="shotBtn" title="Download screenshot">⭳</button>
-      <button class="icon-btn" id="extractBtn" title="Extract text + links">🄣</button>
-      <button class="icon-btn" id="devBtn" title="Run JavaScript on the page">{ }</button>
-      <label class="stream-toggle" title="Pause the live stream to save bandwidth">
+      <button class="icon-btn" id="reloadBtn" title="Reload">⟳</button>
+      <button class="icon-btn desktop-only" id="homeBtn" title="Home">⌂</button>
+      <button class="icon-btn" id="vpBtn" title="Toggle mobile/desktop page rendering">📱</button>
+      <button class="icon-btn mobile-only" id="keyToggle" title="Type on the page">⌨</button>
+      <button class="icon-btn desktop-only" id="shotBtn" title="Download screenshot">⭳</button>
+      <button class="icon-btn desktop-only" id="extractBtn" title="Extract text + links">🄣</button>
+      <button class="icon-btn desktop-only" id="devBtn" title="Run JavaScript on the page">{ }</button>
+      <label class="stream-toggle desktop-only" title="Pause the live stream to save bandwidth">
         <input type="checkbox" id="streamCheck" checked /> live
       </label>
     </nav>
@@ -60,16 +66,40 @@
             <p id="overlayText">Connecting to the engine…</p>
           </div>
         </div>
-        <div class="focus-hint" id="focusHint">Click the page, then type — keys are sent to the remote browser</div>
+        <div class="focus-hint" id="focusHint">Tap = click · swipe = scroll · hold = right-click</div>
       </section>
 
+      <div class="backdrop" id="backdrop"></div>
+
       <aside class="side" id="side">
+        <div class="sheet-handle desktop-none"></div>
         <div class="side-tabs">
+          <button data-pane="session">Session</button>
           <button data-pane="console" class="active">Console</button>
           <button data-pane="extract">Page</button>
           <button data-pane="automation">Automate</button>
           <button data-pane="files">Files</button>
           <button data-pane="info">Info</button>
+        </div>
+
+        <div class="pane" id="pane-session">
+          <div class="quick-row">
+            <button class="btn tiny" id="qShot">⭳ Shot</button>
+            <button class="btn tiny" id="qExtract">🄣 Extract</button>
+            <button class="btn tiny" id="qDev">{ } JS</button>
+            <button class="btn tiny" id="qHome">⌂ Home</button>
+            <button class="btn tiny" id="qReload">⟳ Reload</button>
+          </div>
+          <div class="session-row">
+            <label class="select-label">Profile <select id="mSessionSelect"></select></label>
+            <button class="btn tiny js-new-session">+ New</button>
+            <button class="btn tiny js-save-session">Save</button>
+          </div>
+          <div class="quick-row">
+            <label class="stream-toggle"><input type="checkbox" id="mStreamCheck" checked /> live stream</label>
+            <button class="btn tiny" id="mVpBtn">📱 Mobile page</button>
+            <button class="btn tiny danger" id="mLogout">Log out</button>
+          </div>
         </div>
 
         <div class="pane active" id="pane-console">
@@ -99,7 +129,7 @@
             </select>
             <button class="btn tiny" id="runScript">Run ▶</button>
           </div>
-          <textarea id="scriptBox" spellcheck="false" rows="14"></textarea>
+          <textarea id="scriptBox" spellcheck="false" rows="10"></textarea>
           <div class="pane-toolbar">
             <label>session <input id="scriptSession" placeholder="(active)" /></label>
           </div>
@@ -120,14 +150,22 @@
       </aside>
     </main>
 
+    <div class="keybar" id="keybar">
+      <input id="keyInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off"
+             spellcheck="false" placeholder="Type on the page…" enterkeyhint="enter" />
+      <button class="icon-btn" id="keyTab" title="Tab">⇥</button>
+      <button class="icon-btn" id="keyBack" title="Backspace">⌫</button>
+      <button class="icon-btn" id="keyHide" title="Hide keyboard">▾</button>
+    </div>
+
     <footer class="statusbar">
       <span id="statConn">connecting…</span>
       <span id="statFps">0 fps</span>
-      <span id="statRtt">– ms</span>
-      <span id="statMem">–</span>
-      <span id="statViewport">–</span>
+      <span class="desktop-only" id="statRtt">– ms</span>
+      <span class="desktop-only" id="statMem">–</span>
+      <span class="desktop-only" id="statViewport">–</span>
       <span class="grow"></span>
-      <span id="statScroll">–</span>
+      <span class="desktop-only" id="statScroll">–</span>
       <span id="statEngine">gecko</span>
     </footer>
 

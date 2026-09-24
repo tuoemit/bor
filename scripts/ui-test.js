@@ -96,6 +96,17 @@ function check(name, cond, detail) {
 
   await page.screenshot({ path: `${SHOTS}/02-panel.png` });
 
+  // The default rendering is phone-width; a desktop client opts into desktop
+  // width (same as clicking the 📱/🖥 toggle) before the wide-frame checks.
+  await page.evaluate(() =>
+    fetch('/api/viewport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'panel' },
+      body: JSON.stringify({ width: 1280, height: 800 }),
+    })
+  );
+  await page.waitForTimeout(1000);
+
   process.stdout.write('\nnavigate via the address bar\n');
 
   await page.click('#urlInput');
@@ -127,10 +138,16 @@ function check(name, cond, detail) {
 
   process.stdout.write('\ninput reaches the remote page\n');
 
-  // Focus the viewport, then type into Wikipedia's search box via the panel.
-  await page.click('#screen', { position: { x: 300, y: 20 } });
+  // Focus Wikipedia's search box deterministically by selector (fixed
+  // coordinate clicks drift as Wikipedia's layout changes), then type via panel.
+  await page.evaluate(() =>
+    fetch('/api/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'panel' },
+      body: JSON.stringify({ selector: 'input[name="search"]' }),
+    })
+  );
   await page.waitForTimeout(600);
-
   await page.evaluate(() => document.getElementById('viewport').focus());
   await page.keyboard.type('Gecko software engine');
   await page.waitForTimeout(1500);

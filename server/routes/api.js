@@ -140,6 +140,21 @@ router.post(
   })
 );
 
+router.post(
+  '/viewport',
+  wrap(async (req, res) => {
+    const { tabId, width, height } = req.body || {};
+    const w = Math.min(3840, Math.max(320, Number(width) | 0));
+    const h = Math.min(2160, Math.max(320, Number(height) | 0));
+    if (!w || !h) throw new HttpError(400, 'bad_request', 'width and height are required.');
+    const tab = manager.getTab(tabId);
+    await tab.page.setViewportSize({ width: w, height: h });
+    await tab.refreshMeta();
+    hub.broadcast(tab.id, { type: 'state', tab: tab.info() });
+    res.json({ ok: true, viewport: tab.viewport, tab: tab.info() });
+  })
+);
+
 /* ----------------------------- interaction ------------------------- */
 
 router.post(

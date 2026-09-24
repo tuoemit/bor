@@ -9,8 +9,6 @@
     connDot: $('connDot'),
     enginePill: $('enginePill'),
     sessionSelect: $('sessionSelect'),
-    newSessionBtn: $('newSessionBtn'),
-    saveSessionBtn: $('saveSessionBtn'),
     sideToggle: $('sideToggle'),
     logoutBtn: $('logoutBtn'),
     backBtn: $('backBtn'),
@@ -59,7 +57,34 @@
     devRun: $('devRun'),
     devClose: $('devClose'),
     devOut: $('devOut'),
+    vpBtn: $('vpBtn'),
+    mVpBtn: $('mVpBtn'),
+    mSessionSelect: $('mSessionSelect'),
+    mStreamCheck: $('mStreamCheck'),
+    mLogout: $('mLogout'),
+    qShot: $('qShot'),
+    qExtract: $('qExtract'),
+    qDev: $('qDev'),
+    qHome: $('qHome'),
+    qReload: $('qReload'),
+    keybar: $('keybar'),
+    keyInput: $('keyInput'),
+    keyTab: $('keyTab'),
+    keyBack: $('keyBack'),
+    keyHide: $('keyHide'),
+    keyToggle: $('keyToggle'),
+    backdrop: $('backdrop'),
+    sheetHandle: document.querySelector('.sheet-handle'),
   };
+
+  const mqMobile = window.matchMedia('(max-width: 860px)');
+  const isMobile = () => mqMobile.matches;
+
+  const VP_PRESETS = {
+    desktop: { width: 1280, height: 800 },
+    mobile: { width: 412, height: 840 },
+  };
+  const isMobileVp = () => state.viewport && state.viewport.width < 700;
 
   const HOME = 'https://example.com';
 
@@ -348,6 +373,10 @@
     els.lockIcon.textContent = tab.url.startsWith('http') ? (secure ? '🔒' : '⚠') : '–';
     els.lockIcon.className = `lock ${secure ? 'secure' : tab.url.startsWith('http') ? 'insecure' : ''}`;
     els.statScroll.textContent = tab.scroll ? `x ${Math.round(tab.scroll.x)}, y ${Math.round(tab.scroll.y)} · ${tab.content ? tab.content.height : 0}px tall` : '–';
+    if (tab.viewport) {
+      state.viewport = tab.viewport;
+      updateVpButtons();
+    }
     document.title = `${tab.title || 'Cloud Browser'} · Cloud Browser`;
     renderTabs();
   }
@@ -370,19 +399,42 @@
       pushEvent({ type: 'error', text: e.message });
       hideOverlay();
     }
+    // Keep the WebSocket stream pointed at the tab we just navigated, so
+    // frames and injected input always target the same page.
+    if (state.activeTabId) send({ type: 'subscribe', tabId: state.activeTabId });
     send({ type: 'refresh' });
   }
 
   /* ------------------------------ input ---------------------------- */
 
-  function toPageCoords(ev) {
-    const rect = els.screen.getBoundingClientRect();
-    const scaleX = state.viewport.width / rect.width;
-    const scaleY = state.viewport.height / rect.height;
+  /** The letterboxed sub-rect of <img> where the remote bitmap is painted. */
+  function paintedRect() {
+    const box = els.screen.getBoundingClientRect();
+    const nw = els.screen.naturalWidth || state.viewport.width;
+    const nh = els.screen.naturalHeight || state.viewport.height;
+    const scale = Math.min(box.width / nw, box.height / nh);
+    const pw = nw * scale;
+    const ph = nh * scale;
     return {
-      x: Math.max(0, Math.round((ev.clientX - rect.left) * scaleX)),
-      y: Math.max(0, Math.round((ev.clientY - rect.top) * scaleY)),
+      left: box.left + (box.width - pw) / 2,
+      top: box.top + (box.height - ph) / 2,
+      width: pw,
+      height: ph,
+      nw,
+      nh,
     };
+  }
+
+  function coordsFrom(clientX, clientY) {
+    const p = paintedRect();
+    return {
+      x: Math.max(0, Math.min(p.nw, Math.round(((clientX - p.left) / p.width) * p.nw))),
+      y: Math.max(0, Math.min(p.nh, Math.round(((clientY - p.top) / p.height) * p.nh))),
+    };
+  }
+
+  function toPageCoords(ev) {
+    return coordsFrom(ev.clientX, ev.clientY);
   }
 
   function wireInput() {
@@ -425,8 +477,90 @@
       { passive: false }
     );
 
+    /* ---- touch: tap = click, swipe = scroll, hold = right-click ---- */
+    let tStart = null;
+    let tMoved = false;
+    let holdFired = false;
+    let holdTimer = null;
+    let lastTouchScroll = 0;
+
+    els.viewport.addEventListener(
+      'touchstart',
+      (ev) => {
+        if (ev.touches.length !== 1) {
+          tStart = null;
+          clearTimeout(holdTimer);
+          return;
+        }
+        const t = ev.touches[0];
+        tStart = { x: t.clientX, y: t.clientY, at: Date.now() };
+        tMoved = false;
+        holdFired = false;
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => {
+          if (tStart && !tMoved) {
+            holdFired = true;
+            const { x, y } = coordsFrom(tStart.x, tStart.y);
+            send({ type: 'input', event: { type: 'mouse.click', x, y, button: 'right' } });
+          }
+        }, 550);
+      },
+      { passive: true }
+    );
+
+    els.viewport.addEventListener(
+      'touchmove',
+      (ev) => {
+        ev.preventDefault(); // own the gesture: no native scroll/zoom of the panel
+        if (!tStart || ev.touches.length !== 1) return;
+        const t = ev.touches[0];
+        if (!tMoved && Math.hypot(t.clientX - tStart.x, t.clientY - tStart.y) > 12) {
+          tMoved = true;
+          clearTimeout(holdTimer);
+        }
+        if (!tMoved) return;
+        const now = Date.now();
+        if (now - lastTouchScroll >= 30) {
+          const p = paintedRect();
+          const sx = p.nw / p.width;
+          const sy = p.nh / p.height;
+          const dx = Math.round((tStart.x - t.clientX) * sx);
+          const dy = Math.round((tStart.y - t.clientY) * sy);
+          if (dx || dy) send({ type: 'input', event: { type: 'scroll', deltaX: dx, deltaY: dy } });
+          tStart.x = t.clientX;
+          tStart.y = t.clientY;
+          lastTouchScroll = now;
+        }
+      },
+      { passive: false }
+    );
+
+    els.viewport.addEventListener(
+      'touchend',
+      () => {
+        clearTimeout(holdTimer);
+        if (tStart && !tMoved && !holdFired && Date.now() - tStart.at < 450) {
+          const { x, y } = coordsFrom(tStart.x, tStart.y);
+          send({ type: 'input', event: { type: 'mouse.click', x, y } });
+          maybeShowKeyboard(x, y);
+        }
+        tStart = null;
+      },
+      { passive: true }
+    );
+
     // Keys go to the remote page whenever the address bar is not focused.
     document.addEventListener('keydown', (ev) => {
+      if (ev.target === els.keyInput) {
+        // The on-screen typing bar: characters travel via its `input` event;
+        // control keys are forwarded explicitly.
+        if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(ev.key) || ev.key.startsWith('Arrow')) {
+          ev.preventDefault();
+          if (ev.key === 'Escape') closeKeybar();
+          else send({ type: 'input', event: { type: 'key.press', key: ev.key } });
+        }
+        return;
+      }
       if (state.urlFocused) {
         if (ev.key === 'Escape') els.urlInput.blur();
         return;
@@ -529,8 +663,6 @@
       });
     });
 
-    els.sideToggle.addEventListener('click', () => els.side.classList.toggle('collapsed'));
-
     els.clearEvents.addEventListener('click', () => {
       els.eventList.innerHTML = '';
     });
@@ -624,7 +756,7 @@
     document.querySelectorAll('.pane').forEach((p) => {
       p.classList.toggle('active', p.id === `pane-${name}`);
     });
-    if (els.side.classList.contains('collapsed')) els.side.classList.remove('collapsed');
+    openSide();
   }
 
   /* ---------------------------- automation ------------------------- */
@@ -724,32 +856,35 @@
 
   /* ----------------------------- sessions -------------------------- */
 
+  async function switchSession(id) {
+    try {
+      await api('/sessions', { method: 'POST', body: JSON.stringify({ id }) });
+      state.activeTabId = null;
+      await refreshTabs();
+      const tabs = state.tabs.filter((t) => t.sessionId === id);
+      if (tabs.length) subscribe(tabs[0].id);
+      else await newTab();
+    } catch (e) {
+      pushEvent({ type: 'error', text: e.message });
+      toast(e.message, 'error');
+    }
+  }
+
   async function loadSessions() {
     const data = await api('/sessions');
     state.sessions = data.sessions;
     state.activeSessionId = data.activeSessionId;
-    els.sessionSelect.innerHTML = '';
-    for (const s of state.sessions) {
-      const opt = document.createElement('option');
-      opt.value = s.id;
-      opt.textContent = `${s.id}${s.active ? ' ●' : ''}${s.cookies ? ` (${s.cookies}🍪)` : ''}`;
-      els.sessionSelect.appendChild(opt);
-    }
-    if (state.activeSessionId) els.sessionSelect.value = state.activeSessionId;
-
-    els.sessionSelect.onchange = async () => {
-      const id = els.sessionSelect.value;
-      try {
-        await api('/sessions', { method: 'POST', body: JSON.stringify({ id }) });
-        state.activeTabId = null;
-        await refreshTabs();
-        const tabs = state.tabs.filter((t) => t.sessionId === id);
-        if (tabs.length) subscribe(tabs[0].id);
-        else await newTab();
-      } catch (e) {
-        pushEvent({ type: 'error', text: e.message });
+    for (const sel of [els.sessionSelect, els.mSessionSelect]) {
+      sel.innerHTML = '';
+      for (const s of state.sessions) {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = `${s.id}${s.active ? ' ●' : ''}${s.cookies ? ` (${s.cookies}🍪)` : ''}`;
+        sel.appendChild(opt);
       }
-    };
+      if (state.activeSessionId) sel.value = state.activeSessionId;
+      sel.onchange = () => switchSession(sel.value);
+    }
   }
 
   /* ------------------------------- misc ---------------------------- */
@@ -793,6 +928,126 @@
     });
   }
 
+  /* ------------------------- mobile: keyboard ---------------------- */
+
+  function openKeybar() {
+    els.keybar.classList.add('show');
+    setTimeout(() => els.keyInput.focus({ preventScroll: true }), 60);
+  }
+
+  function closeKeybar() {
+    els.keybar.classList.remove('show');
+    els.keyInput.blur();
+  }
+
+  /** After a tap, if the remote page focused a field, raise the phone keyboard. */
+  function maybeShowKeyboard() {
+    if (!isMobile()) return;
+    // The tap travels over the WebSocket and the probe over fetch; give the
+    // click time to land before asking the page what it focused. Retry a few
+    // times: focus can lag the click on slow pages.
+    const FIELD_EXPR =
+      "(() => { const a = document.activeElement; if (!a) return ''; const tag = a.tagName || ''; return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable) ? tag : ''; })()";
+    const probe = (tries) => {
+      api('/eval', {
+        method: 'POST',
+        body: JSON.stringify({ expression: FIELD_EXPR, tabId: state.activeTabId }),
+      })
+        .then((res) => {
+          if (res.ok && res.value) openKeybar();
+          else if (tries > 0) setTimeout(() => probe(tries - 1), 350);
+        })
+        .catch(() => {
+          if (tries > 0) setTimeout(() => probe(tries - 1), 350);
+        });
+    };
+    setTimeout(() => probe(4), 400);
+  }
+
+  function wireKeybar() {
+    els.keyToggle.addEventListener('click', () => {
+      if (els.keybar.classList.contains('show')) closeKeybar();
+      else openKeybar();
+    });
+    els.keyHide.addEventListener('click', closeKeybar);
+    els.keyBack.addEventListener('click', () => {
+      if (window.__cb) window.__cb.keysSent += 1;
+      send({ type: 'input', event: { type: 'key.press', key: 'Backspace' } });
+    });
+    els.keyTab.addEventListener('click', () => send({ type: 'input', event: { type: 'key.press', key: 'Tab' } }));
+
+    els.keyInput.addEventListener('input', (ev) => {
+      if (ev.inputType && ev.inputType.startsWith('delete')) {
+        send({ type: 'input', event: { type: 'key.press', key: 'Backspace' } });
+      } else if (ev.data) {
+        if (window.__cb) window.__cb.keysSent += 1;
+        send({ type: 'input', event: { type: 'key.type', text: ev.data, delay: 0 } });
+      }
+      // Keep the buffer empty so soft keyboards keep composing.
+      requestAnimationFrame(() => {
+        els.keyInput.value = '';
+      });
+    });
+  }
+
+  /* -------------------------- mobile: sheet ------------------------ */
+
+  function openSide() {
+    if (isMobile()) {
+      els.side.classList.add('open');
+      els.backdrop.classList.add('show');
+    } else {
+      els.side.classList.remove('collapsed');
+    }
+  }
+
+  function closeSide() {
+    if (isMobile()) {
+      els.side.classList.remove('open');
+      els.backdrop.classList.remove('show');
+    } else {
+      els.side.classList.add('collapsed');
+    }
+  }
+
+  function toggleSide() {
+    if (isMobile()) {
+      if (els.side.classList.contains('open')) closeSide();
+      else openSide();
+    } else {
+      els.side.classList.toggle('collapsed');
+    }
+  }
+
+  /* ------------------------ viewport presets ----------------------- */
+
+  function updateVpButtons() {
+    const mob = isMobileVp();
+    els.vpBtn.textContent = mob ? '🖥' : '📱';
+    els.vpBtn.title = mob ? 'Render pages at desktop width' : 'Render pages at phone width';
+    els.mVpBtn.textContent = mob ? '🖥 Desktop page' : '📱 Mobile page';
+  }
+
+  async function setViewportPreset(name, { quiet = false } = {}) {
+    const p = VP_PRESETS[name];
+    try {
+      const res = await api('/viewport', {
+        method: 'POST',
+        body: JSON.stringify({ width: p.width, height: p.height, tabId: state.activeTabId }),
+      });
+      if (res.viewport) state.viewport = res.viewport;
+      updateVpButtons();
+      send({ type: 'refresh' });
+      if (!quiet) toast(`Pages now render at ${p.width}×${p.height}`, 'ok', 1800);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function toggleViewport() {
+    setViewportPreset(isMobileVp() ? 'desktop' : 'mobile');
+  }
+
   async function bootstrap() {
     showOverlay('Starting Firefox…');
     try {
@@ -804,6 +1059,10 @@
         state.activeTabId = data.activeTabId || data.tabs[0].id;
         renderTabs();
         subscribe(state.activeTabId);
+      }
+      // Phone clients get phone-width page rendering by default.
+      if (isMobile() && !isMobileVp()) {
+        await setViewportPreset('mobile', { quiet: true });
       }
     } catch (e) {
       showOverlay(`Could not start: ${e.message}`);
@@ -832,15 +1091,18 @@
     els.homeBtn.addEventListener('click', () => go(HOME));
     els.shotBtn.addEventListener('click', screenshotDownload);
     els.extractBtn.addEventListener('click', runExtract);
-    els.logoutBtn.addEventListener('click', async () => {
+    async function doLogout() {
       teardown();
       await fetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'panel' },
       }).catch(() => {});
       location.replace('/login');
-    });
-    els.newSessionBtn.addEventListener('click', async () => {
+    }
+    els.logoutBtn.addEventListener('click', doLogout);
+    els.mLogout.addEventListener('click', doLogout);
+
+    async function doNewSession() {
       const id = prompt('New profile name (cookies + storage stay isolated):', `profile-${Date.now().toString(36)}`);
       if (!id) return;
       try {
@@ -849,27 +1111,76 @@
         await loadSessions();
         await refreshTabs();
         await newTab();
+        if (isMobile()) closeSide();
       } catch (e) {
         pushEvent({ type: 'error', text: e.message });
+        toast(e.message, 'error');
       }
-    });
-    els.saveSessionBtn.addEventListener('click', async () => {
+    }
+
+    async function doSaveSession(btn) {
       try {
         const res = await api(`/sessions/${encodeURIComponent(state.activeSessionId || 'default')}/save`, { method: 'POST' });
         pushEvent({ type: 'log', text: `Saved ${res.cookies} cookies / ${res.origins} origins for "${res.id}"` });
-        els.saveSessionBtn.textContent = 'Saved ✓';
-        setTimeout(() => (els.saveSessionBtn.textContent = 'Save'), 1500);
+        toast(`Saved ${res.cookies} cookies for "${res.id}"`, 'ok');
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = 'Saved ✓';
+          setTimeout(() => (btn.textContent = orig), 1500);
+        }
       } catch (e) {
         pushEvent({ type: 'error', text: e.message });
+        toast(e.message, 'error');
       }
+    }
+
+    document.querySelectorAll('.js-new-session').forEach((b) => b.addEventListener('click', doNewSession));
+    document.querySelectorAll('.js-save-session').forEach((b) => b.addEventListener('click', () => doSaveSession(b)));
+
+    function setStream(on) {
+      els.streamCheck.checked = on;
+      els.mStreamCheck.checked = on;
+      if (on) send({ type: 'subscribe', tabId: state.activeTabId });
+      else send({ type: 'unsubscribe' });
+    }
+    els.streamCheck.addEventListener('change', () => setStream(els.streamCheck.checked));
+    els.mStreamCheck.addEventListener('change', () => setStream(els.mStreamCheck.checked));
+
+    // Side panel / bottom sheet.
+    els.sideToggle.addEventListener('click', toggleSide);
+    els.backdrop.addEventListener('click', closeSide);
+    if (els.sheetHandle) els.sheetHandle.addEventListener('click', closeSide);
+
+    // Viewport presets (phone-width vs desktop-width page rendering).
+    els.vpBtn.addEventListener('click', toggleViewport);
+    els.mVpBtn.addEventListener('click', toggleViewport);
+
+    // Session-pane quick actions.
+    els.qShot.addEventListener('click', screenshotDownload);
+    els.qExtract.addEventListener('click', runExtract);
+    els.qDev.addEventListener('click', () => {
+      els.devModal.hidden = false;
+      if (isMobile()) closeSide();
     });
-    els.streamCheck.addEventListener('change', () => {
-      if (els.streamCheck.checked) {
-        send({ type: 'subscribe', tabId: state.activeTabId });
-      } else {
-        send({ type: 'unsubscribe' });
-      }
+    els.qHome.addEventListener('click', () => go(HOME));
+    els.qReload.addEventListener('click', () => {
+      showOverlay('Reloading…');
+      api('/reload', { method: 'POST', body: JSON.stringify({ tabId: state.activeTabId }) }).catch(() => {});
     });
+
+    wireKeybar();
+    updateVpButtons();
+
+    // Tiny read-only hook for the e2e suites (and curious humans).
+    window.__cb = {
+      keysSent: 0,
+      get activeTab() {
+        return state.activeTabId;
+      },
+      get connected() {
+        return state.connected;
+      },
+    };
 
     every(() => send({ type: 'ping', t: Date.now() }), 5000);
     every(pollEvents, 2500);

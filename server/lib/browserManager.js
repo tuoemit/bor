@@ -49,11 +49,13 @@ class Tab {
     this.sessionId = sessionId;
     this.createdAt = now();
     this.lastUsedAt = now();
+    this.lastInputAt = 0;
     this.loading = false;
     this.title = '';
     this.url = '';
     this.scroll = { x: 0, y: 0 };
     this.content = { width: 0, height: 0 };
+    this.viewport = { width: config.viewportWidth, height: config.viewportHeight };
     this.events = [];
     this.downloads = [];
     this.closed = false;
@@ -61,7 +63,7 @@ class Tab {
     this._shotBusy = false;
     this._navToken = 0;
 
-    page.setDefaultTimeout(config.actionTimeoutMs);
+    page.setDefaultTimeout(Math.min(config.actionTimeoutMs, 10000));
     page.setDefaultNavigationTimeout(config.navTimeoutMs);
 
     page.on('framenavigated', (frame) => {
@@ -152,6 +154,7 @@ class Tab {
       viewers: this.viewers.size,
       scroll: this.scroll,
       content: this.content,
+      viewport: this.viewport,
       downloads: this.downloads.map((d) => ({
         id: d.id,
         filename: d.suggestedFilename,
@@ -164,17 +167,24 @@ class Tab {
 
   async refreshMeta() {
     if (this.closed) return;
-    try {
-      this.url = this.page.url();
-      this.title = await this.page.title();
-      this.scroll = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
-      this.content = await this.page.evaluate(() => ({
-        width: Math.max(document.documentElement.scrollWidth, window.innerWidth),
-        height: Math.max(document.documentElement.scrollHeight, window.innerHeight),
-      }));
-    } catch {
-      /* page may be mid-navigation */
-    }
+    // A click/type can kick off a navigation; Playwright then serialises every
+    // evaluate/title call behind that navigation and each would burn its full
+    // timeout. Race the whole refresh so it can never wedge an API response --
+    // the screencast loop refreshes again shortly anyway.
+    await withTimeout(
+      (async () => {
+        this.url = this.page.url();
+        this.title = await this.page.title();
+        this.scroll = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+        this.content = await this.page.evaluate(() => ({
+          width: Math.max(document.documentElement.scrollWidth, window.innerWidth),
+          height: Math.max(document.documentElement.scrollHeight, window.innerHeight),
+        }));
+        const vs = this.page.viewportSize();
+        if (vs) this.viewport = vs;
+      })(),
+      3000
+    ).catch(() => {});
   }
 
   /** Screenshot of the current viewport as a JPEG buffer. */
@@ -188,7 +198,7 @@ class Tab {
       caret: 'initial',
       animations: 'disabled',
     });
-    const shotWidth = width || Math.round(config.viewportWidth * config.deviceScaleFactor);
+    const shotWidth = width || Math.round((this.viewport.width || config.viewportWidth) * config.deviceScaleFactor);
     return { buffer: buf, width: shotWidth };
   }
 
@@ -242,37 +252,48 @@ class Tab {
 
   async clickAt(x, y, { button = 'left', clickCount = 1, modifiers = [] } = {}) {
     this.touch();
-    await this.page.mouse.click(Number(x), Number(y), { button, clickCount, modifiers });
-    await this.refreshMeta();
+    await withTimeout(
+      this.page.mouse.click(Number(x), Number(y), { button, clickCount, modifiers }),
+      config.actionTimeoutMs
+    );
+    this.refreshMeta().catch(() => {});
   }
 
   async moveAt(x, y) {
     this.touch();
-    await this.page.mouse.move(Number(x), Number(y));
+    await withTimeout(this.page.mouse.move(Number(x), Number(y)), config.actionTimeoutMs).catch(() => {});
   }
 
   async pressKey(key) {
     this.touch();
-    await this.page.keyboard.press(key);
-    await this.refreshMeta();
+    await withTimeout(this.page.keyboard.press(key), config.actionTimeoutMs);
+    this.refreshMeta().catch(() => {});
   }
 
   async typeText(text, { delay = 8 } = {}) {
     this.touch();
-    await this.page.keyboard.type(String(text), { delay });
-    await this.refreshMeta();
+    await withTimeout(this.page.keyboard.type(String(text), { delay }), config.actionTimeoutMs);
+    this.refreshMeta().catch(() => {});
   }
 
   async scrollBy(dx, dy) {
     this.touch();
-    await this.page.mouse.wheel(Number(dx) || 0, Number(dy) || 0);
-    await this.refreshMeta();
+    // window.scrollBy in the page is far more reliable than synthesised wheel
+    // events under headless Gecko.
+    await withTimeout(
+      this.page.evaluate(([x, y]) => window.scrollBy(x, y), [Number(dx) || 0, Number(dy) || 0]),
+      config.actionTimeoutMs
+    ).catch(() => {});
+    this.refreshMeta().catch(() => {});
   }
 
   async scrollTo(x, y) {
     this.touch();
-    await this.page.evaluate(([sx, sy]) => window.scrollTo(sx, sy), [Number(x) || 0, Number(y) || 0]);
-    await this.refreshMeta();
+    await withTimeout(
+      this.page.evaluate(([sx, sy]) => window.scrollTo(sx, sy), [Number(x) || 0, Number(y) || 0]),
+      config.actionTimeoutMs
+    );
+    this.refreshMeta().catch(() => {});
   }
 
   async evalJs(expression) {
@@ -686,6 +707,16 @@ class BrowserManager {
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+function withTimeout(promise, ms) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => {
+      t = setTimeout(() => rej(new Error('refresh timeout')), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
+}
 
 function boolish(v, fallback) {
   if (v === undefined || v === '') return fallback;

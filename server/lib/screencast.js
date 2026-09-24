@@ -180,6 +180,13 @@ class ScreencastHub {
       while (state.running) {
         const tab = manager.tabs.get(tabId);
         if (!tab || tab.closed || tab.viewers.size === 0) break;
+        // Input and screenshots share Firefox's single protocol channel. When
+        // the user is actively clicking/scrolling/typing, get out of the way so
+        // their actions land instead of queueing behind captures.
+        if (tab.lastInputAt && Date.now() - tab.lastInputAt < 250) {
+          await sleep(60);
+          continue;
+        }
         const t0 = Date.now();
         await this.captureFrame(tab, false);
         const spent = Date.now() - t0;
@@ -252,6 +259,7 @@ class ScreencastHub {
 
   async applyInput(ws, msg) {
     const tab = manager.getTab(ws.subscribedTabId);
+    tab.lastInputAt = Date.now();
     const ev = msg.event || {};
     const { x, y } = this.scale(ev.x || 0, ev.y || 0);
 
