@@ -24,12 +24,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install JS deps first so app edits don't bust this (large) layer.
+# --ignore-scripts is deliberate: the package's own postinstall hook downloads
+# Firefox, but at this stage scripts/ is not copied yet (layer caching), which
+# made the build fail with "Cannot find module scripts/postinstall.js". The
+# explicit `npx playwright install` below does the same job deterministically.
+# (playwright/playwright-core ship no lifecycle scripts, so --ignore-scripts
+# skips nothing else.)
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts
 
-# Fetch ONLY the Firefox build that matches the pinned playwright, into a shared
-# path. postinstall already does `playwright install firefox`; this adds
-# --with-deps as a belt-and-braces for any missing library.
+# Fetch ONLY the Firefox build that matches the pinned playwright, plus its
+# system libraries. This is what the postinstall hook would have done.
 RUN npx playwright install firefox --with-deps
 
 # Copy the app (server + public assets). Vanilla JS -- no build step.
